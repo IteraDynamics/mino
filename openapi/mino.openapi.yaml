@@ -1,0 +1,269 @@
+openapi: 3.0.3
+info:
+  title: Mino Agentic Commerce Control Plane
+  version: 0.2.0
+  description: >-
+    Policy, authorization, and security firewall for agentic commerce. The MVP proxy is
+    pinned to Agentic Commerce Protocol API-Version 2026-04-17 and forwards ACP request
+    bodies unchanged while making authorization decisions from merchant-authoritative
+    checkout state.
+servers:
+  - url: https://mino.example
+paths:
+  /v1/acp/{merchantId}/checkout_sessions:
+    post:
+      operationId: createAcpCheckoutSession
+      summary: Proxy ACP checkout creation through Mino
+      parameters:
+        - $ref: '#/components/parameters/MerchantId'
+        - $ref: '#/components/parameters/Authorization'
+        - $ref: '#/components/parameters/ApiVersion'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/MandateToken'
+        - $ref: '#/components/parameters/AgentId'
+        - $ref: '#/components/parameters/AgentKeyId'
+        - $ref: '#/components/parameters/AgentTimestamp'
+        - $ref: '#/components/parameters/AgentNonce'
+        - $ref: '#/components/parameters/AgentSignature'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+            description: ACP 2026-04-17 CheckoutSessionCreateRequest, forwarded unchanged.
+      responses:
+        '200':
+          description: Checkout session accepted by Mino policy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProxyDecisionResponse'
+        '202':
+          description: Checkout session is held for human approval.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProxyDecisionResponse'
+        '400':
+          $ref: '#/components/responses/ProtocolError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Mino policy blocked the checkout.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProxyDecisionResponse'
+        '409':
+          $ref: '#/components/responses/IdempotencyConflict'
+        '502':
+          $ref: '#/components/responses/UpstreamError'
+  /v1/acp/{merchantId}/checkout_sessions/{checkoutSessionId}/complete:
+    post:
+      operationId: completeAcpCheckoutSession
+      summary: Authorize and proxy ACP checkout completion
+      description: >-
+        Mino retrieves the current merchant CheckoutSession immediately before evaluation,
+        applies the active spend mandate and machine-actor controls, atomically reserves
+        allowance in Redis, emits a short-lived Ed25519 delegation assertion, and only then
+        forwards payment completion.
+      parameters:
+        - $ref: '#/components/parameters/MerchantId'
+        - name: checkoutSessionId
+          in: path
+          required: true
+          schema: { type: string, minLength: 1 }
+        - $ref: '#/components/parameters/Authorization'
+        - $ref: '#/components/parameters/ApiVersion'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/MandateToken'
+        - $ref: '#/components/parameters/AgentId'
+        - $ref: '#/components/parameters/AgentKeyId'
+        - $ref: '#/components/parameters/AgentTimestamp'
+        - $ref: '#/components/parameters/AgentNonce'
+        - $ref: '#/components/parameters/AgentSignature'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+            description: ACP 2026-04-17 CheckoutSessionCompleteRequest, forwarded unchanged only after ALLOW.
+      responses:
+        '200':
+          description: Mino allowed the payment operation and the merchant processed the request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProxyDecisionResponse'
+        '202':
+          description: Payment is not forwarded; human approval is required.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProxyDecisionResponse'
+        '400':
+          $ref: '#/components/responses/ProtocolError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Payment is not forwarded because Mino blocked it.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProxyDecisionResponse'
+        '409':
+          $ref: '#/components/responses/IdempotencyConflict'
+        '502':
+          $ref: '#/components/responses/UpstreamError'
+components:
+  parameters:
+    MerchantId:
+      name: merchantId
+      in: path
+      required: true
+      schema: { type: string, minLength: 1 }
+    Authorization:
+      name: Authorization
+      in: header
+      required: true
+      description: ACP merchant Bearer credential. Mino never treats this as the spend mandate.
+      schema: { type: string, pattern: '^Bearer\\s+\\S+$' }
+    ApiVersion:
+      name: API-Version
+      in: header
+      required: true
+      schema: { type: string, enum: ['2026-04-17'] }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: { type: string, minLength: 1, maxLength: 255 }
+    MandateToken:
+      name: X-Mino-Mandate-Token
+      in: header
+      required: true
+      description: Short-lived Ed25519-signed Mino spend-mandate token.
+      schema: { type: string, minLength: 32 }
+    AgentId:
+      name: X-Mino-Agent-Id
+      in: header
+      required: true
+      schema: { type: string, minLength: 1 }
+    AgentKeyId:
+      name: X-Mino-Agent-Key-Id
+      in: header
+      required: true
+      schema: { type: string, minLength: 1 }
+    AgentTimestamp:
+      name: X-Mino-Agent-Timestamp
+      in: header
+      required: true
+      schema: { type: string, pattern: '^\\d{10}$' }
+    AgentNonce:
+      name: X-Mino-Agent-Nonce
+      in: header
+      required: true
+      schema: { type: string, minLength: 16, maxLength: 128 }
+    AgentSignature:
+      name: X-Mino-Agent-Signature
+      in: header
+      required: true
+      description: Base64url Ed25519 signature over method, path, timestamp, nonce, mandate digest, ACP version, idempotency key, and body digest.
+      schema: { type: string, minLength: 32 }
+  schemas:
+    Money:
+      type: object
+      required: [currency, minorUnits]
+      properties:
+        currency: { type: string, minLength: 3, maxLength: 3 }
+        minorUnits: { type: string, pattern: '^\\d+$' }
+    PolicyDecision:
+      type: object
+      required:
+        - decisionId
+        - requestId
+        - verdict
+        - reasons
+        - requestedAmount
+        - mandateId
+        - policyId
+        - policyVersion
+        - eligibleForDelegationAssertion
+        - evaluationLatencyMicros
+        - evaluatedAt
+      properties:
+        decisionId: { type: string }
+        requestId: { type: string }
+        verdict:
+          type: string
+          enum: [ALLOW, BLOCK, PENDING_HUMAN_APPROVAL]
+        reasons:
+          type: array
+          items: { type: string }
+        requestedAmount: { $ref: '#/components/schemas/Money' }
+        policyAmount: { $ref: '#/components/schemas/Money' }
+        approvedAmount: { $ref: '#/components/schemas/Money' }
+        mandateId: { type: string }
+        policyId: { type: string }
+        policyVersion: { type: integer }
+        eligibleForDelegationAssertion: { type: boolean }
+        evaluationLatencyMicros: { type: integer, minimum: 0 }
+        evaluatedAt: { type: string, format: date-time }
+        approval:
+          type: object
+          properties:
+            required: { type: boolean, enum: [true] }
+            approvalMode: { type: string }
+            expiresAt: { type: string, format: date-time }
+    ProxyDecisionResponse:
+      type: object
+      required: [decision]
+      properties:
+        decision: { $ref: '#/components/schemas/PolicyDecision' }
+        checkout_session_id: { type: string }
+        upstream:
+          type: object
+          additionalProperties: true
+  responses:
+    ProtocolError:
+      description: Unsupported or invalid ACP protocol input.
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error: { type: string, enum: [PROTOCOL_ERROR] }
+              reason: { type: string }
+    
+    Unauthorized:
+      description: Mandate token or agent request proof failed authentication.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [error, reason]
+            properties:
+              error: { type: string, enum: [UNAUTHORIZED] }
+              reason: { type: string }
+    IdempotencyConflict:
+      description: The idempotency key was reused for a materially different request.
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error: { type: string, enum: [IDEMPOTENCY_CONFLICT] }
+              reason: { type: string }
+    UpstreamError:
+      description: The configured ACP merchant endpoint could not provide a valid response.
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error: { type: string, enum: [UPSTREAM_ERROR] }
+              upstream_status: { type: integer }

@@ -65,6 +65,24 @@ model Organization {
   auditLogs    AuditLog[]
   approvals    ApprovalRequest[]
   reservations SpendReservation[]
+  merchants     MerchantEndpoint[]
+}
+
+model MerchantEndpoint {
+  id                 String   @id @default(uuid()) @db.Uuid
+  organizationId     String   @db.Uuid
+  externalMerchantId String
+  domain             String
+  vendorId           String?
+  baseUrl            String
+  active             Boolean  @default(true)
+  createdAt          DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt          DateTime @updatedAt @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+
+  @@unique([organizationId, externalMerchantId])
+  @@index([organizationId, domain, active])
 }
 
 model User {
@@ -219,7 +237,9 @@ model ApprovalRequest {
   amountMinor      BigInt @db.BigInt
   currency         String @db.Char(3)
   merchantDomain   String
-  status             ApprovalStatus @default(PENDING)
+  checkoutSessionId String?
+  sessionSnapshot   Json?
+  status           ApprovalStatus @default(PENDING)
   requiredSignatures Int @default(2)
   approvalData       Json?
 

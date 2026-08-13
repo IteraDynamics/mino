@@ -41,6 +41,8 @@ export interface AgentSpendMandate {
   readonly expiresAt: Date;
   readonly revokedAt?: Date;
   readonly signingKeyId: string;
+  /** SHA-256 hex digest of the issued token JTI. Raw bearer tokens are never persisted. */
+  readonly tokenJtiHash?: string;
 }
 
 export interface MandateTokenClaims {
