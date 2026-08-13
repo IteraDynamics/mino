@@ -1,0 +1,276 @@
+generator client {
+  provider     = "prisma-client"
+  output       = "../src/generated/prisma"
+  moduleFormat = "esm"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+  DISABLED
+}
+
+enum AgentStatus {
+  ACTIVE
+  SUSPENDED
+  REVOKED
+}
+
+enum MandateStatus {
+  ACTIVE
+  REVOKED
+  EXPIRED
+}
+
+enum ApprovalMode {
+  AUTO_APPROVE
+  DUAL_SIGNATURE_SLACK
+  HARD_BLOCK
+}
+
+enum DecisionVerdict {
+  ALLOW
+  BLOCK
+  PENDING_HUMAN_APPROVAL
+}
+
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  EXPIRED
+}
+
+enum SpendReservationStatus {
+  RESERVED
+  COMMITTED
+  RELEASED
+  EXPIRED
+}
+
+model Organization {
+  id        String   @id @default(uuid()) @db.Uuid
+  name      String
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  users        User[]
+  agents       AgentIdentity[]
+  policies     Policy[]
+  mandates     AgentMandate[]
+  auditLogs    AuditLog[]
+  approvals    ApprovalRequest[]
+  reservations SpendReservation[]
+}
+
+model User {
+  id             String     @id @default(uuid()) @db.Uuid
+  organizationId String     @db.Uuid
+  email          String
+  status         UserStatus @default(ACTIVE)
+  createdAt      DateTime   @default(now()) @db.Timestamptz(6)
+  updatedAt      DateTime   @updatedAt @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  mandates     AgentMandate[]
+  auditLogs    AuditLog[]
+  approvals    ApprovalRequest[]
+  reservations SpendReservation[]
+
+  @@unique([organizationId, email])
+  @@index([organizationId, status])
+}
+
+model AgentIdentity {
+  id              String      @id @default(uuid()) @db.Uuid
+  organizationId  String      @db.Uuid
+  externalAgentId String
+  displayName     String?
+  status          AgentStatus @default(ACTIVE)
+  publicKey       String?
+  keyId           String?
+  createdAt       DateTime    @default(now()) @db.Timestamptz(6)
+  updatedAt       DateTime    @updatedAt @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  mandates     AgentMandate[]
+  auditLogs    AuditLog[]
+  reservations SpendReservation[]
+
+  @@unique([organizationId, externalAgentId])
+  @@index([organizationId, status])
+}
+
+model Policy {
+  id             String @id @default(uuid()) @db.Uuid
+  organizationId String @db.Uuid
+  name           String
+  version        Int
+  active         Boolean @default(true)
+
+  baseCurrency           String @default("USD") @db.Char(3)
+  maxBudgetMinor         BigInt @db.BigInt
+  rollingDailyLimitMinor BigInt @db.BigInt
+
+  approvedMerchantDomains String[]
+  approvedVendorIds       String[]
+  restrictedCategories    String[]
+  approvalMode            ApprovalMode
+
+  maxTransactionsPerMinute Int @default(10)
+  crossMerchantWindowSecs  Int @default(60)
+  maxDistinctMerchants     Int @default(5)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  mandates     AgentMandate[]
+
+  @@unique([organizationId, name, version])
+  @@index([organizationId, active])
+}
+
+model AgentMandate {
+  id             String @id @default(uuid()) @db.Uuid
+  organizationId String @db.Uuid
+  userId         String @db.Uuid
+  agentId        String @db.Uuid
+  policyId       String @db.Uuid
+
+  tokenJtiHash  String @unique
+  policyVersion Int
+
+  currency               String @default("USD") @db.Char(3)
+  maxBudgetMinor         BigInt @db.BigInt
+  rollingDailyLimitMinor BigInt @db.BigInt
+
+  approvedMerchantDomains String[]
+  approvedVendorIds       String[]
+  restrictedCategories    String[]
+  approvalMode            ApprovalMode
+
+  maxTransactionsPerMinute Int @default(10)
+  crossMerchantWindowSecs  Int @default(60)
+  maxDistinctMerchants     Int @default(5)
+
+  delegationPayloadHash String
+  signingKeyId          String
+
+  status    MandateStatus @default(ACTIVE)
+  issuedAt  DateTime      @default(now()) @db.Timestamptz(6)
+  expiresAt DateTime      @db.Timestamptz(6)
+  revokedAt DateTime?     @db.Timestamptz(6)
+  metadata  Json?
+
+  organization Organization  @relation(fields: [organizationId], references: [id])
+  user         User          @relation(fields: [userId], references: [id])
+  agent        AgentIdentity @relation(fields: [agentId], references: [id])
+  policy       Policy        @relation(fields: [policyId], references: [id])
+  auditLogs    AuditLog[]
+  approvals    ApprovalRequest[]
+  reservations SpendReservation[]
+
+  @@index([organizationId, agentId, status, expiresAt])
+  @@index([userId, status])
+}
+
+model SpendReservation {
+  id             String @id @default(uuid()) @db.Uuid
+  organizationId String @db.Uuid
+  userId         String @db.Uuid
+  agentId        String @db.Uuid
+  mandateId      String @db.Uuid
+
+  idempotencyKey   String
+  merchantDomain   String
+  merchantVendorId String?
+  currency         String @db.Char(3)
+  amountMinor      BigInt @db.BigInt
+  status           SpendReservationStatus @default(RESERVED)
+
+  reservedAt  DateTime  @default(now()) @db.Timestamptz(6)
+  committedAt DateTime? @db.Timestamptz(6)
+  releasedAt  DateTime? @db.Timestamptz(6)
+  expiresAt   DateTime  @db.Timestamptz(6)
+
+  organization Organization  @relation(fields: [organizationId], references: [id])
+  user         User          @relation(fields: [userId], references: [id])
+  agent        AgentIdentity @relation(fields: [agentId], references: [id])
+  mandate      AgentMandate  @relation(fields: [mandateId], references: [id])
+
+  @@unique([organizationId, idempotencyKey])
+  @@index([mandateId, status, reservedAt])
+  @@index([userId, reservedAt])
+}
+
+model ApprovalRequest {
+  id             String @id @default(uuid()) @db.Uuid
+  organizationId String @db.Uuid
+  userId         String @db.Uuid
+  mandateId      String @db.Uuid
+  decisionId     String @unique
+
+  requestedPayload Json
+  amountMinor      BigInt @db.BigInt
+  currency         String @db.Char(3)
+  merchantDomain   String
+  status             ApprovalStatus @default(PENDING)
+  requiredSignatures Int @default(2)
+  approvalData       Json?
+
+  createdAt  DateTime  @default(now()) @db.Timestamptz(6)
+  expiresAt  DateTime  @db.Timestamptz(6)
+  resolvedAt DateTime? @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  user         User         @relation(fields: [userId], references: [id])
+  mandate      AgentMandate @relation(fields: [mandateId], references: [id])
+
+  @@index([organizationId, status, createdAt])
+  @@index([mandateId, status])
+}
+
+model AuditLog {
+  id             BigInt @id @default(autoincrement())
+  organizationId String @db.Uuid
+  requestId      String @db.Uuid
+  decisionId     String @db.Uuid
+  userId         String @db.Uuid
+  agentId        String @db.Uuid
+  mandateId      String? @db.Uuid
+  timestamp      DateTime @default(now()) @db.Timestamptz(6)
+
+  protocol         String
+  operation        String
+  merchantDomain   String
+  merchantVendorId String?
+  requestedPayload Json
+  approvedPayload  Json?
+  verdict           DecisionVerdict
+  reasonCodes       String[]
+  policyVersion     Int?
+  evaluationLatencyMicros Int
+
+  requestDigest       String
+  eventDigest         String
+  integritySignature String
+  signingKeyId        String
+  metadata            Json?
+
+  organization Organization  @relation(fields: [organizationId], references: [id])
+  user         User          @relation(fields: [userId], references: [id])
+  agent        AgentIdentity @relation(fields: [agentId], references: [id])
+  mandate      AgentMandate? @relation(fields: [mandateId], references: [id])
+
+  @@index([organizationId, timestamp])
+  @@index([agentId, timestamp])
+  @@index([userId, timestamp])
+  @@index([merchantDomain, timestamp])
+  @@index([decisionId])
+  @@index([requestId])
+}
