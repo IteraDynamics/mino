@@ -34,6 +34,7 @@ integration("PostgreSQL schema", () => {
       "PaymentOutcome",
       "ApprovalRequest",
       "ApprovalVote",
+      "AuditChainHead",
       "AuditLog",
     ]) {
       expect(tables.has(table)).toBe(true);
@@ -122,5 +123,67 @@ integration("PostgreSQL schema", () => {
         row.indexdef.includes('"approverId"'),
       ),
     ).toBe(true);
+  });
+
+  it("materializes the one-row-per-organization audit chain head", async () => {
+    const indexes = await pool.query<{ indexdef: string }>(
+      `select indexdef
+         from pg_indexes
+        where schemaname = 'public'
+          and tablename = 'AuditChainHead'`,
+    );
+    const columns = await pool.query<{ column_name: string }>(
+      `select column_name
+         from information_schema.columns
+        where table_schema = 'public'
+          and table_name = 'AuditChainHead'`,
+    );
+    const names = new Set(columns.rows.map((row) => row.column_name));
+
+    expect(
+      indexes.rows.some((row) =>
+        row.indexdef.includes('UNIQUE') && row.indexdef.includes('"organizationId"'),
+      ),
+    ).toBe(true);
+    for (const column of ["organizationId", "chainSequence", "chainDigest", "updatedAt"]) {
+      expect(names.has(column)).toBe(true);
+    }
+  });
+
+  it("enforces one audit-chain sequence per organization and materializes signed-chain fields", async () => {
+    const indexes = await pool.query<{ indexdef: string }>(
+      `select indexdef
+         from pg_indexes
+        where schemaname = 'public'
+          and tablename = 'AuditLog'`,
+    );
+    const columns = await pool.query<{ column_name: string }>(
+      `select column_name
+         from information_schema.columns
+        where table_schema = 'public'
+          and table_name = 'AuditLog'`,
+    );
+    const names = new Set(columns.rows.map((row) => row.column_name));
+
+    expect(
+      indexes.rows.some((row) =>
+        row.indexdef.includes('UNIQUE') &&
+        row.indexdef.includes('"organizationId"') &&
+        row.indexdef.includes('"chainSequence"'),
+      ),
+    ).toBe(true);
+
+    for (const column of [
+      "decisionSnapshot",
+      "chainVersion",
+      "chainSequence",
+      "previousChainDigest",
+      "chainDigest",
+      "eventDigest",
+      "integritySignature",
+      "signingKeyId",
+    ]) {
+      expect(names.has(column)).toBe(true);
+    }
   });
 });

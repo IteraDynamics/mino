@@ -75,6 +75,7 @@ model Organization {
   policies        Policy[]
   mandates        AgentMandate[]
   auditLogs       AuditLog[]
+  auditChainHead  AuditChainHead?
   approvals       ApprovalRequest[]
   reservations    SpendReservation[]
   merchants       MerchantEndpoint[]
@@ -346,6 +347,15 @@ model ApprovalVote {
   @@index([approvalRequestId, decision, createdAt])
 }
 
+model AuditChainHead {
+  organizationId String   @id @db.Uuid
+  chainSequence  BigInt   @default(0) @db.BigInt
+  chainDigest    String?
+  updatedAt      DateTime @default(now()) @updatedAt @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+}
+
 model AuditLog {
   id             BigInt @id @default(autoincrement())
   organizationId String @db.Uuid
@@ -356,29 +366,38 @@ model AuditLog {
   mandateId      String? @db.Uuid
   timestamp      DateTime @default(now()) @db.Timestamptz(6)
 
-  protocol                  String
-  operation                 String
-  merchantDomain            String
-  merchantVendorId          String?
-  requestedPayload          Json
-  approvedPayload           Json?
-  verdict                   DecisionVerdict
-  reasonCodes               String[]
-  policyVersion             Int?
-  evaluationLatencyMicros   Int
+  protocol                 String
+  operation                String
+  merchantDomain           String
+  merchantVendorId         String?
+  requestedPayload         Json
+  approvedPayload          Json?
+  decisionSnapshot         Json
+  verdict                  DecisionVerdict
+  reasonCodes              String[]
+  policyVersion            Int?
+  evaluationLatencyMicros  Int
+  reservationId            String?
+  upstreamStatus           Int?
 
-  requestDigest       String
-  eventDigest         String
-  integritySignature String
-  signingKeyId        String
-  metadata            Json?
+  requestDigest        String
+  eventDigest          String
+  chainVersion         Int    @default(1)
+  chainSequence        BigInt @db.BigInt
+  previousChainDigest  String?
+  chainDigest          String
+  integritySignature  String
+  signingKeyId         String
+  metadata             Json?
 
   organization Organization  @relation(fields: [organizationId], references: [id])
   user         User          @relation(fields: [userId], references: [id])
   agent        AgentIdentity @relation(fields: [agentId], references: [id])
   mandate      AgentMandate? @relation(fields: [mandateId], references: [id])
 
+  @@unique([organizationId, chainSequence])
   @@index([organizationId, timestamp])
+  @@index([organizationId, chainSequence])
   @@index([agentId, timestamp])
   @@index([userId, timestamp])
   @@index([merchantDomain, timestamp])
