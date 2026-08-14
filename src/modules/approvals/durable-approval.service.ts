@@ -1,4 +1,5 @@
 import type { AgentSpendMandate } from "../../domain/mandates/mandate.types.js";
+import { DecisionReason } from "../../domain/evaluation/decision-reasons.js";
 import type { PolicyDecision, SpendState } from "../../domain/evaluation/evaluation.types.js";
 import { DecisionVerdict } from "../../domain/evaluation/evaluation.types.js";
 import { redactSensitivePayload } from "../audit/audit-sink.js";
@@ -197,8 +198,10 @@ export function approvalCoversDecision(
   }
 
   const approvedReasons = new Set(request.reasonCodes);
-  const currentEscalationReasons = decision.reasons.filter((reason) =>
-    reason === "TRANSACTION_LIMIT_EXCEEDED" || reason === "DAILY_LIMIT_EXCEEDED",
+  const currentEscalationReasons = decision.reasons.filter(
+    (reason) =>
+      reason === DecisionReason.TRANSACTION_LIMIT_EXCEEDED ||
+      reason === DecisionReason.DAILY_LIMIT_EXCEEDED,
   );
   if (currentEscalationReasons.length === 0) {
     return false;
@@ -207,7 +210,7 @@ export function approvalCoversDecision(
     return false;
   }
 
-  if (currentEscalationReasons.includes("DAILY_LIMIT_EXCEEDED")) {
+  if (currentEscalationReasons.includes(DecisionReason.DAILY_LIMIT_EXCEEDED)) {
     const approvedSpend = parseSpendSnapshot(request.spendSnapshot);
     if (!approvedSpend || !currentSpend) {
       return false;
@@ -223,17 +226,42 @@ export function approvalCoversDecision(
   return true;
 }
 
-export function grantApprovedDecision(
-  decision: PolicyDecision,
-): PolicyDecision {
+export function grantApprovedDecision(decision: PolicyDecision): PolicyDecision {
   if (decision.verdict !== DecisionVerdict.PENDING_HUMAN_APPROVAL || !decision.policyAmount) {
     return decision;
   }
   return {
     ...decision,
     verdict: DecisionVerdict.ALLOW,
+    reasons: [
+      ...decision.reasons.filter((reason) => reason !== DecisionReason.HUMAN_APPROVAL_REQUIRED),
+      DecisionReason.HUMAN_APPROVAL_GRANTED,
+    ],
     approvedAmount: decision.policyAmount,
     eligibleForDelegationAssertion: true,
+    approval: undefined,
+  };
+}
+
+export function blockApprovalDecision(
+  decision: PolicyDecision,
+  reason:
+    | DecisionReason.HUMAN_APPROVAL_REJECTED
+    | DecisionReason.HUMAN_APPROVAL_EXPIRED
+    | DecisionReason.HUMAN_APPROVAL_STALE,
+): PolicyDecision {
+  if (decision.verdict !== DecisionVerdict.PENDING_HUMAN_APPROVAL) {
+    return decision;
+  }
+  const { approval: _approval, approvedAmount: _approvedAmount, ...rest } = decision;
+  return {
+    ...rest,
+    verdict: DecisionVerdict.BLOCK,
+    reasons: [
+      ...decision.reasons.filter((entry) => entry !== DecisionReason.HUMAN_APPROVAL_REQUIRED),
+      reason,
+    ],
+    eligibleForDelegationAssertion: false,
   };
 }
 
