@@ -3,6 +3,7 @@ import { canonicalJson } from "../../infrastructure/crypto/canonical-json.js";
 
 export interface HumanApprovalEvent {
   readonly eventId: string;
+  readonly approvalRequestId: string;
   readonly type: "mino.approval.required";
   readonly createdAt: string;
   readonly decisionId: string;
@@ -60,6 +61,7 @@ export class WebhookApprovalEmitter implements HumanApprovalEmitter {
       headers: {
         "Content-Type": "application/json",
         "X-Mino-Event-Id": event.eventId,
+        "X-Mino-Approval-Request-Id": event.approvalRequestId,
         "X-Mino-Signature": `t=${timestamp},v1=${signature}`,
       },
       body,
