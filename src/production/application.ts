@@ -1,0 +1,212 @@
+import { randomUUID } from "node:crypto";
+import { performance } from "node:perf_hooks";
+import { PrismaPg } from "@prisma/adapter-pg";
+import { Pool } from "pg";
+import { createClient } from "redis";
+import { PrismaClient } from "../generated/prisma/client.js";
+import { createApp } from "../app.js";
+import { AgentRequestVerifier } from "../modules/agents/agent-request-verifier.js";
+import {
+  HmacApprovalResolutionAuthenticator,
+} from "../modules/approvals/approval-resolution-authenticator.js";
+import {
+  WebhookApprovalEmitter,
+} from "../modules/approvals/approval-emitter.js";
+import {
+  PostgresApprovalRequestStore,
+} from "../modules/approvals/approval-request.store.js";
+import {
+  DurableHumanApprovalService,
+} from "../modules/approvals/durable-approval.service.js";
+import {
+  PostgresAuditLedger,
+  PostgresAuditVerifier,
+} from "../modules/audit/postgres-audit-ledger.js";
+import { MandateTokenService } from "../modules/mandates/mandate-token.service.js";
+import { BackgroundPaymentReconciler } from "../modules/payments/background-payment-reconciler.js";
+import { PostgresPaymentOutcomeStore } from "../modules/payments/payment-outcome.store.js";
+import { PolicyEvaluator } from "../modules/policy/policy-evaluator.js";
+import { ACPAdapter } from "../modules/proxy/acp-adapter.js";
+import { CheckoutProxyService } from "../modules/proxy/checkout-proxy.service.js";
+import { DelegationAssertionService } from "../modules/proxy/delegation-assertion.service.js";
+import { FetchACPMerchantClient } from "../modules/proxy/merchant-client.js";
+import { AuthorizationReservationService } from "../modules/spending/authorization-reservation.service.js";
+import type { ProductionConfig } from "../infrastructure/config/production-config.js";
+import {
+  StaticAuditKeyProvider,
+  StaticMandateVerificationKeyResolver,
+} from "../infrastructure/crypto/static-key-providers.js";
+import { StaticMerchantCredentialProvider } from "../infrastructure/merchant/static-merchant-credential-provider.js";
+import { PgSqlAdapter } from "../infrastructure/postgres/pg-sql-adapter.js";
+import {
+  PrismaAgentVerificationKeyResolver,
+  PrismaMandateRepository,
+  PrismaMerchantRegistry,
+  PrismaPolicyRepository,
+} from "../infrastructure/prisma/control-plane.repositories.js";
+import {
+  RedisAuthorizationScriptClient,
+  RedisNonceReplayGuard,
+} from "../infrastructure/redis/redis-adapters.js";
+
+export interface ProductionApplication {
+  readonly app: Awaited<ReturnType<typeof createApp>>;
+  readonly reconciler: BackgroundPaymentReconciler;
+  readonly auditVerifier: PostgresAuditVerifier;
+  readonly repositories: {
+    readonly mandates: PrismaMandateRepository;
+    readonly merchants: PrismaMerchantRegistry;
+    readonly policies: PrismaPolicyRepository;
+    readonly agentKeys: PrismaAgentVerificationKeyResolver;
+  };
+  readiness(): Promise<boolean>;
+  close(): Promise<void>;
+}
+
+export async function createProductionApplication(
+  config: ProductionConfig,
+): Promise<ProductionApplication> {
+  const sqlPool = new Pool({
+    connectionString: config.databaseUrl,
+    connectionTimeoutMillis: 5_000,
+  });
+  const redis = createClient({ url: config.redisUrl });
+  redis.on("error", () => undefined);
+
+  const prismaAdapter = new PrismaPg({
+    connectionString: config.databaseUrl,
+    connectionTimeoutMillis: 5_000,
+  });
+  const prisma = new PrismaClient({ adapter: prismaAdapter });
+
+  let app: Awaited<ReturnType<typeof createApp>> | undefined;
+  try {
+    await sqlPool.query("select 1");
+    await redis.connect();
+    await redis.ping();
+    await prisma.$connect();
+    await prisma.$queryRawUnsafe("select 1");
+
+    const sql = new PgSqlAdapter(sqlPool);
+    const mandates = new PrismaMandateRepository(prisma);
+    const merchants = new PrismaMerchantRegistry(prisma);
+    const policies = new PrismaPolicyRepository(prisma);
+    const agentKeys = new PrismaAgentVerificationKeyResolver(prisma);
+
+    const mandateTokens = new MandateTokenService(
+      new StaticMandateVerificationKeyResolver(config.mandateVerificationKeys),
+      { issuer: config.issuer },
+    );
+    const agentRequests = new AgentRequestVerifier(
+      agentKeys,
+      new RedisNonceReplayGuard(redis),
+    );
+    const reservations = new AuthorizationReservationService(
+      new RedisAuthorizationScriptClient(redis),
+    );
+    const paymentOutcomes = new PostgresPaymentOutcomeStore(sql);
+    const approvals = new DurableHumanApprovalService(
+      new PostgresApprovalRequestStore(sql),
+      new WebhookApprovalEmitter(config.approvalWebhook),
+      randomUUID,
+    );
+    const approvalAuthenticator = new HmacApprovalResolutionAuthenticator({
+      secret: config.approvalResolutionSecret,
+    });
+
+    const auditKeys = new StaticAuditKeyProvider(
+      config.auditSigningKey,
+      config.auditVerificationKeys,
+    );
+    const audit = new PostgresAuditLedger(sql, auditKeys);
+    const auditVerifier = new PostgresAuditVerifier(sql, auditKeys);
+    const merchantClient = new FetchACPMerchantClient();
+    const proxy = new CheckoutProxyService({
+      mandateTokens,
+      mandates,
+      agentRequests,
+      merchants,
+      merchantClient,
+      adapter: new ACPAdapter(),
+      evaluator: new PolicyEvaluator({
+        generateId: randomUUID,
+        monotonicMicros: () => Math.floor(performance.now() * 1_000),
+      }),
+      reservations,
+      paymentOutcomes,
+      delegationAssertions: new DelegationAssertionService(
+        config.delegationSigningKey,
+        randomUUID,
+        { issuer: config.issuer },
+      ),
+      approvals,
+      audit,
+      generateId: randomUUID,
+    });
+
+    app = await createApp({
+      proxy,
+      approvals,
+      approvalAuthenticator,
+      logger: true,
+    });
+
+    const readiness = async (): Promise<boolean> => {
+      try {
+        await Promise.all([
+          sqlPool.query("select 1"),
+          redis.ping(),
+          prisma.$queryRawUnsafe("select 1"),
+        ]);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+
+    app.get("/readyz", async (_request, reply) => {
+      if (!(await readiness())) {
+        return reply.code(503).send({ status: "not_ready" });
+      }
+      return { status: "ready" };
+    });
+
+    const reconciler = new BackgroundPaymentReconciler({
+      outcomes: paymentOutcomes,
+      reservations,
+      merchants,
+      merchantClient,
+      credentials: new StaticMerchantCredentialProvider(config.merchantCredentials),
+      generateRequestId: randomUUID,
+    });
+
+    let closed = false;
+    return {
+      app,
+      reconciler,
+      auditVerifier,
+      repositories: { mandates, merchants, policies, agentKeys },
+      readiness,
+      async close(): Promise<void> {
+        if (closed) {
+          return;
+        }
+        closed = true;
+        await app?.close();
+        if (redis.isOpen) {
+          await redis.quit();
+        }
+        await prisma.$disconnect();
+        await sqlPool.end();
+      },
+    };
+  } catch (error) {
+    await app?.close().catch(() => undefined);
+    if (redis.isOpen) {
+      await redis.quit().catch(() => undefined);
+    }
+    await prisma.$disconnect().catch(() => undefined);
+    await sqlPool.end().catch(() => undefined);
+    throw error;
+  }
+}
