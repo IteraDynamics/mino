@@ -276,6 +276,7 @@ export class PostgresApprovalRequestStore implements ApprovalRequestStore {
 
   public async castVote(input: CastApprovalVoteInput): Promise<ApprovalRequestRecord> {
     const tx = await this.sql.connect();
+    let committed = false;
     try {
       await tx.query("begin");
       const requestResult = await tx.query<ApprovalRequestRow>(
@@ -296,6 +297,9 @@ export class PostgresApprovalRequestStore implements ApprovalRequestStore {
           [input.approvalRequestId, input.now],
         );
         request = expired.rows[0]!;
+        await tx.query("commit");
+        committed = true;
+        throw new ApprovalAlreadyResolvedError(request.status);
       }
 
       const existingVote = await tx.query<ApprovalVoteRow>(
@@ -312,6 +316,7 @@ export class PostgresApprovalRequestStore implements ApprovalRequestStore {
         }
         const votes = await this.loadVotes(input.approvalRequestId, tx);
         await tx.query("commit");
+        committed = true;
         return mapRequestRow(request, votes);
       }
 
@@ -366,12 +371,15 @@ export class PostgresApprovalRequestStore implements ApprovalRequestStore {
 
       const votes = await this.loadVotes(input.approvalRequestId, tx);
       await tx.query("commit");
+      committed = true;
       return mapRequestRow(request, votes);
     } catch (error) {
-      try {
-        await tx.query("rollback");
-      } catch {
-        // Preserve the original resolution failure.
+      if (!committed) {
+        try {
+          await tx.query("rollback");
+        } catch {
+          // Preserve the original resolution failure.
+        }
       }
       throw error;
     } finally {
