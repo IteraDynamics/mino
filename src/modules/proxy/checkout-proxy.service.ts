@@ -2,6 +2,7 @@ import { canonicalJson, sha256Base64Url } from "../../infrastructure/crypto/cano
 import type { FxQuote } from "../../domain/money.js";
 import type { AgentSpendMandate } from "../../domain/mandates/mandate.types.js";
 import type { CheckoutIntent } from "../../domain/checkout/checkout.types.js";
+import { DecisionReason } from "../../domain/evaluation/decision-reasons.js";
 import {
   DecisionVerdict,
   type PolicyDecision,
@@ -11,7 +12,14 @@ import {
 import type { PolicyEvaluator } from "../../domain/evaluation/policy-evaluator.interface.js";
 import type { AgentRequestProof } from "../agents/agent-request-verifier.js";
 import type { AgentRequestAuthenticator } from "../agents/agent-request-verifier.js";
-import type { HumanApprovalEmitter } from "../approvals/approval-emitter.js";
+import {
+  ApprovalRequestStatus,
+  approvalCoversDecision,
+  blockApprovalDecision,
+  grantApprovedDecision,
+  type HumanApprovalService,
+} from "../approvals/durable-approval.service.js";
+import type { ApprovalRequestRecord } from "../approvals/approval-request.store.js";
 import type { AuditSink } from "../audit/audit-sink.js";
 import { redactSensitivePayload } from "../audit/audit-sink.js";
 import type { MandateTokenService } from "../mandates/mandate-token.service.js";
@@ -60,7 +68,7 @@ export interface CheckoutProxyServiceDependencies {
   readonly reservations: AuthorizationReservations;
   readonly paymentOutcomes: PaymentOutcomeStore;
   readonly delegationAssertions: DelegationAssertionIssuer;
-  readonly approvals: HumanApprovalEmitter;
+  readonly approvals: HumanApprovalService;
   readonly audit: AuditSink;
   readonly fxQuotes?: FxQuoteProvider;
   readonly generateId: () => string;
@@ -92,6 +100,7 @@ export interface CompleteCheckoutProxyInput extends BaseProxyInput {
 export interface CheckoutProxyResult {
   readonly decision: PolicyDecision;
   readonly checkoutSessionId?: string;
+  readonly approvalRequestId?: string;
   readonly upstream?: MerchantResponse;
   readonly reservationId?: string;
   readonly paymentOutcomeId?: string;
@@ -187,12 +196,26 @@ export class CheckoutProxyService {
       ...(fxQuote ? { fxQuote } : {}),
     });
 
+    let approvalRequestId: string | undefined;
     if (decision.verdict === DecisionVerdict.BLOCK) {
       await this.deps.merchantClient
         .cancelCheckout(merchant, session.id, headers)
         .catch(() => undefined);
     } else if (decision.verdict === DecisionVerdict.PENDING_HUMAN_APPROVAL) {
-      await this.emitApproval(decision, auth.mandate, merchant, session.id, input.now);
+      const approval = await this.deps.approvals.requestApproval({
+        decision,
+        mandate: auth.mandate,
+        merchantId: input.merchantId,
+        merchantDomain: merchant.domain,
+        checkoutSessionId: session.id,
+        idempotencyKey: input.idempotencyKey,
+        requestDigest: createCheckoutRequestDigest(input, intent),
+        requestedPayload: input.body,
+        sessionSnapshot: session,
+        spend: zeroSpend(auth.mandate.currency),
+        now: input.now,
+      });
+      approvalRequestId = approval.id;
     }
 
     await this.recordAudit({
@@ -207,6 +230,7 @@ export class CheckoutProxyService {
     return {
       decision,
       checkoutSessionId: session.id,
+      ...(approvalRequestId ? { approvalRequestId } : {}),
       upstream,
     };
   }
@@ -255,16 +279,7 @@ export class CheckoutProxyService {
       ...(fxQuote ? { fxQuote } : {}),
     });
 
-    if (preflight.verdict !== DecisionVerdict.ALLOW || !preflight.approvedAmount) {
-      if (preflight.verdict === DecisionVerdict.PENDING_HUMAN_APPROVAL) {
-        await this.emitApproval(
-          preflight,
-          auth.mandate,
-          merchant,
-          input.checkoutSessionId,
-          input.now,
-        );
-      }
+    if (preflight.verdict === DecisionVerdict.BLOCK || !preflight.policyAmount) {
       await this.recordAudit({
         input,
         mandate: auth.mandate,
@@ -290,7 +305,10 @@ export class CheckoutProxyService {
       }
       return this.resolveExistingOutcome({
         outcome: priorOutcome,
-        decision: preflight,
+        decision:
+          preflight.verdict === DecisionVerdict.PENDING_HUMAN_APPROVAL
+            ? grantApprovedDecision(preflight)
+            : preflight,
         input,
         mandate: auth.mandate,
         merchant,
@@ -298,23 +316,35 @@ export class CheckoutProxyService {
       });
     }
 
+    const existingApproval = await this.deps.approvals.getByIdempotency(
+      auth.mandate.organizationId,
+      input.idempotencyKey,
+      requestDigest,
+      input.now,
+    );
+    const allowDailyLimitOverride =
+      existingApproval?.status === ApprovalRequestStatus.APPROVED &&
+      input.now < existingApproval.expiresAt &&
+      existingApproval.reasonCodes.includes(DecisionReason.DAILY_LIMIT_EXCEEDED);
+
     const reservationId = this.deps.generateId();
     const reservation = await this.deps.reservations.tryReserve({
       mandate: auth.mandate,
-      amount: preflight.approvedAmount,
+      amount: preflight.approvedAmount ?? preflight.policyAmount,
       merchantDomain: merchant.domain,
       requestId: input.requestId,
       reservationId,
       idempotencyKey: input.idempotencyKey,
       requestDigest,
       now: input.now,
+      ...(allowDailyLimitOverride ? { allowDailyLimitOverride: true } : {}),
     });
 
     if (reservation.status === ReservationStatus.IDEMPOTENCY_CONFLICT) {
       throw new IdempotencyConflictError();
     }
 
-    const finalDecision = this.deps.evaluator.evaluate({
+    const evaluatedFinalDecision = this.deps.evaluator.evaluate({
       now: input.now,
       mandate: auth.mandate,
       checkout: intent,
@@ -324,19 +354,27 @@ export class CheckoutProxyService {
     });
 
     const activeReservationId = reservation.reservationId;
+    let finalDecision = evaluatedFinalDecision;
+    let approvalRequestId = existingApproval?.id;
+
+    if (evaluatedFinalDecision.verdict === DecisionVerdict.PENDING_HUMAN_APPROVAL) {
+      const resolved = await this.resolvePendingApproval({
+        decision: evaluatedFinalDecision,
+        existingApproval,
+        mandate: auth.mandate,
+        merchant,
+        input,
+        session,
+        requestDigest,
+        spend: reservation.spend,
+      });
+      finalDecision = resolved.decision;
+      approvalRequestId = resolved.approvalRequestId;
+    }
 
     if (finalDecision.verdict !== DecisionVerdict.ALLOW) {
       if (activeReservationId) {
         await this.deps.reservations.release(auth.mandate.id, activeReservationId);
-      }
-      if (finalDecision.verdict === DecisionVerdict.PENDING_HUMAN_APPROVAL) {
-        await this.emitApproval(
-          finalDecision,
-          auth.mandate,
-          merchant,
-          input.checkoutSessionId,
-          input.now,
-        );
       }
       await this.recordAudit({
         input,
@@ -349,6 +387,7 @@ export class CheckoutProxyService {
       return {
         decision: finalDecision,
         checkoutSessionId: input.checkoutSessionId,
+        ...(approvalRequestId ? { approvalRequestId } : {}),
         ...(activeReservationId ? { reservationId: activeReservationId } : {}),
       };
     }
@@ -480,10 +519,63 @@ export class CheckoutProxyService {
     return {
       decision: finalDecision,
       checkoutSessionId: input.checkoutSessionId,
+      ...(approvalRequestId ? { approvalRequestId } : {}),
       upstream,
       reservationId: activeReservationId,
       paymentOutcomeId: begun.outcome.id,
     };
+  }
+
+  private async resolvePendingApproval(args: {
+    readonly decision: PolicyDecision;
+    readonly existingApproval?: ApprovalRequestRecord;
+    readonly mandate: AgentSpendMandate;
+    readonly merchant: MerchantEndpoint;
+    readonly input: CompleteCheckoutProxyInput;
+    readonly session: ACPCheckoutSession;
+    readonly requestDigest: string;
+    readonly spend: SpendState;
+  }): Promise<{ readonly decision: PolicyDecision; readonly approvalRequestId: string }> {
+    const { decision, mandate, merchant, input, session, requestDigest, spend } = args;
+    const existing = args.existingApproval;
+
+    if (existing) {
+      if (existing.status === ApprovalRequestStatus.REJECTED) {
+        return {
+          decision: blockApprovalDecision(decision, DecisionReason.HUMAN_APPROVAL_REJECTED),
+          approvalRequestId: existing.id,
+        };
+      }
+      if (existing.status === ApprovalRequestStatus.EXPIRED || input.now >= existing.expiresAt) {
+        return {
+          decision: blockApprovalDecision(decision, DecisionReason.HUMAN_APPROVAL_EXPIRED),
+          approvalRequestId: existing.id,
+        };
+      }
+      if (existing.status === ApprovalRequestStatus.APPROVED) {
+        return {
+          decision: approvalCoversDecision(existing, decision, spend)
+            ? grantApprovedDecision(decision)
+            : blockApprovalDecision(decision, DecisionReason.HUMAN_APPROVAL_STALE),
+          approvalRequestId: existing.id,
+        };
+      }
+    }
+
+    const request = await this.deps.approvals.requestApproval({
+      decision,
+      mandate,
+      merchantId: input.merchantId,
+      merchantDomain: merchant.domain,
+      checkoutSessionId: input.checkoutSessionId,
+      idempotencyKey: input.idempotencyKey,
+      requestDigest,
+      requestedPayload: input.body,
+      sessionSnapshot: session,
+      spend,
+      now: input.now,
+    });
+    return { decision, approvalRequestId: request.id };
   }
 
   private async resolveExistingOutcome(args: {
@@ -665,35 +757,6 @@ export class CheckoutProxyService {
     }
   }
 
-  private async emitApproval(
-    decision: PolicyDecision,
-    mandate: AgentSpendMandate,
-    merchant: MerchantEndpoint,
-    checkoutSessionId: string,
-    now: Date,
-  ): Promise<void> {
-    if (!decision.approval || !decision.policyAmount) {
-      throw new Error("Pending approval decision is missing approval metadata");
-    }
-    await this.deps.approvals.emit({
-      eventId: this.deps.generateId(),
-      type: "mino.approval.required",
-      createdAt: now.toISOString(),
-      decisionId: decision.decisionId,
-      requestId: decision.requestId,
-      organizationId: mandate.organizationId,
-      userId: mandate.userId,
-      agentId: mandate.agentId,
-      mandateId: mandate.id,
-      merchantDomain: merchant.domain,
-      checkoutSessionId,
-      amountMinor: decision.policyAmount.minorUnits.toString(10),
-      currency: decision.policyAmount.currency,
-      approvalMode: decision.approval.approvalMode,
-      expiresAt: decision.approval.expiresAt.toISOString(),
-    });
-  }
-
   private async recordAudit(args: {
     readonly input: BaseProxyInput;
     readonly mandate: AgentSpendMandate;
@@ -736,6 +799,30 @@ function completionRequestDigest(input: CompleteCheckoutProxyInput, intent: Chec
     canonicalJson({
       merchantId: input.merchantId,
       checkoutSessionId: input.checkoutSessionId,
+      requestBodyDigest: sha256Base64Url(canonicalJson(input.body)),
+      authorizationState: {
+        merchant: intent.merchant,
+        currency: intent.total.currency,
+        totalMinor: intent.total.minorUnits,
+        cart: intent.cart.map((line) => ({
+          lineId: line.lineId,
+          productId: line.productId,
+          sku: line.sku,
+          category: line.category,
+          quantity: line.quantity,
+          unitPriceMinor: line.unitPrice.minorUnits,
+          totalPriceMinor: line.totalPrice.minorUnits,
+        })),
+      },
+    }),
+  );
+}
+
+function createCheckoutRequestDigest(input: CreateCheckoutProxyInput, intent: CheckoutIntent): string {
+  return sha256Base64Url(
+    canonicalJson({
+      merchantId: input.merchantId,
+      operation: "CREATE_CHECKOUT_SESSION",
       requestBodyDigest: sha256Base64Url(canonicalJson(input.body)),
       authorizationState: {
         merchant: intent.merchant,
