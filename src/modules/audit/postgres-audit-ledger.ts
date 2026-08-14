@@ -47,7 +47,6 @@ interface ChainHeadRow extends QueryResultRow {
 }
 
 interface AuditLogRow extends QueryResultRow {
-  id: string;
   organizationId: string;
   requestId: string;
   decisionId: string;
@@ -79,6 +78,31 @@ interface AuditLogRow extends QueryResultRow {
   metadata: unknown | null;
 }
 
+interface PersistedAuditEvent {
+  readonly requestId: string;
+  readonly decisionId: string;
+  readonly organizationId: string;
+  readonly userId: string;
+  readonly agentId: string;
+  readonly mandateId: string | null;
+  readonly timestamp: string;
+  readonly protocol: string;
+  readonly operation: string;
+  readonly merchantDomain: string;
+  readonly merchantVendorId: string | null;
+  readonly requestedPayload: unknown;
+  readonly approvedPayload: unknown | null;
+  readonly decisionSnapshot: unknown;
+  readonly verdict: string;
+  readonly reasonCodes: readonly string[];
+  readonly policyVersion: number | null;
+  readonly evaluationLatencyMicros: number;
+  readonly requestDigest: string;
+  readonly reservationId: string | null;
+  readonly upstreamStatus: number | null;
+  readonly metadata: unknown | null;
+}
+
 export interface AuditChainCheckpoint {
   readonly version: 1;
   readonly organizationId: string;
@@ -90,6 +114,7 @@ export interface AuditChainCheckpoint {
 }
 
 export enum AuditVerificationFailure {
+  MALFORMED_CHECKPOINT = "MALFORMED_CHECKPOINT",
   INVALID_CHECKPOINT_SIGNATURE = "INVALID_CHECKPOINT_SIGNATURE",
   CHECKPOINT_UNKNOWN_KEY = "CHECKPOINT_UNKNOWN_KEY",
   CHECKPOINT_TRUNCATED = "CHECKPOINT_TRUNCATED",
@@ -119,9 +144,9 @@ export class PostgresAuditLedger implements AuditSink {
   ) {}
 
   public async record(event: GatewayAuditEvent): Promise<void> {
-    const signingKey = await this.signingKeys.getActiveSigningKey(event.organizationId);
     const persisted = persistedEvent(event);
     const eventDigest = sha256Base64Url(canonicalJson(persisted));
+    const signingKey = await this.signingKeys.getActiveSigningKey(event.organizationId);
     const tx = await this.sql.connect();
 
     try {
@@ -131,27 +156,29 @@ export class PostgresAuditLedger implements AuditSink {
         [event.organizationId],
       );
 
-      const headResult = await tx.query<ChainHeadRow>(
-        `select "chainSequence"::text as "chainSequence", "chainDigest"
-           from "AuditLog"
-          where "organizationId" = $1::uuid
-          order by "chainSequence" desc
-          limit 1`,
-        [event.organizationId],
-      );
-      const previous = headResult.rows[0];
-      const sequence = previous ? BigInt(previous.chainSequence) + 1n : 1n;
-      const previousChainDigest = previous?.chainDigest;
+      const head = (
+        await tx.query<ChainHeadRow>(
+          `select "chainSequence"::text as "chainSequence", "chainDigest"
+             from "AuditLog"
+            where "organizationId" = $1::uuid
+            order by "chainSequence" desc
+            limit 1`,
+          [event.organizationId],
+        )
+      ).rows[0];
+
+      const chainSequence = head ? BigInt(head.chainSequence) + 1n : 1n;
+      const previousChainDigest = head?.chainDigest;
       const chainDigest = computeChainDigest({
         organizationId: event.organizationId,
-        chainSequence: sequence,
+        chainSequence,
         eventDigest,
         previousChainDigest,
       });
       const integritySignature = signEd25519(
         signaturePayload({
           organizationId: event.organizationId,
-          chainSequence: sequence,
+          chainSequence,
           eventDigest,
           previousChainDigest,
           chainDigest,
@@ -198,7 +225,7 @@ export class PostgresAuditLedger implements AuditSink {
           persisted.requestDigest,
           eventDigest,
           AUDIT_CHAIN_VERSION,
-          sequence.toString(10),
+          chainSequence.toString(10),
           previousChainDigest ?? null,
           chainDigest,
           integritySignature,
@@ -212,7 +239,7 @@ export class PostgresAuditLedger implements AuditSink {
       try {
         await tx.query("rollback");
       } catch {
-        // Preserve the original audit persistence error.
+        // Preserve the original persistence error.
       }
       throw error;
     } finally {
@@ -224,15 +251,16 @@ export class PostgresAuditLedger implements AuditSink {
     organizationId: string,
     now: Date,
   ): Promise<AuditChainCheckpoint> {
-    const headResult = await this.sql.query<ChainHeadRow>(
-      `select "chainSequence"::text as "chainSequence", "chainDigest"
-         from "AuditLog"
-        where "organizationId" = $1::uuid
-        order by "chainSequence" desc
-        limit 1`,
-      [organizationId],
-    );
-    const head = headResult.rows[0];
+    const head = (
+      await this.sql.query<ChainHeadRow>(
+        `select "chainSequence"::text as "chainSequence", "chainDigest"
+           from "AuditLog"
+          where "organizationId" = $1::uuid
+          order by "chainSequence" desc
+          limit 1`,
+        [organizationId],
+      )
+    ).rows[0];
     const signingKey = await this.signingKeys.getActiveSigningKey(organizationId);
     const unsigned = {
       version: AUDIT_CHAIN_VERSION as 1,
@@ -260,54 +288,46 @@ export class PostgresAuditVerifier {
     organizationId: string,
     checkpoint?: AuditChainCheckpoint,
   ): Promise<AuditVerificationResult> {
+    let checkpointSequence: bigint | undefined;
     if (checkpoint) {
-      const checkpointFailure = await this.verifyCheckpoint(checkpoint, organizationId);
-      if (checkpointFailure) {
+      const checkpointCheck = await this.verifyCheckpoint(checkpoint, organizationId);
+      if (checkpointCheck.failure) {
         return {
           valid: false,
           checkedEvents: 0,
           headSequence: "0",
-          failure: checkpointFailure,
+          failure: checkpointCheck.failure,
         };
       }
+      checkpointSequence = checkpointCheck.sequence;
     }
 
-    const result = await this.sql.query<AuditLogRow>(
-      `select *, "id"::text as "id", "chainSequence"::text as "chainSequence"
-         from "AuditLog"
-        where "organizationId" = $1::uuid
-        order by "chainSequence" asc`,
-      [organizationId],
-    );
+    const rows = (
+      await this.sql.query<AuditLogRow>(
+        `select *, "chainSequence"::text as "chainSequence"
+           from "AuditLog"
+          where "organizationId" = $1::uuid
+          order by "chainSequence" asc`,
+        [organizationId],
+      )
+    ).rows;
 
     let expectedSequence = 1n;
     let previousChainDigest: string | undefined;
     let checkedEvents = 0;
     const digestAtSequence = new Map<string, string>();
 
-    for (const row of result.rows) {
+    for (const row of rows) {
       const sequence = BigInt(row.chainSequence);
-      if (row.chainVersion !== AUDIT_CHAIN_VERSION) {
+      const preSignatureFailure = validateRowStructure(
+        row,
+        sequence,
+        expectedSequence,
+        previousChainDigest,
+      );
+      if (preSignatureFailure) {
         return failureResult(
-          AuditVerificationFailure.UNSUPPORTED_CHAIN_VERSION,
-          checkedEvents,
-          expectedSequence - 1n,
-          previousChainDigest,
-          sequence,
-        );
-      }
-      if (sequence !== expectedSequence) {
-        return failureResult(
-          AuditVerificationFailure.SEQUENCE_GAP,
-          checkedEvents,
-          expectedSequence - 1n,
-          previousChainDigest,
-          sequence,
-        );
-      }
-      if ((row.previousChainDigest ?? undefined) !== previousChainDigest) {
-        return failureResult(
-          AuditVerificationFailure.PREVIOUS_DIGEST_MISMATCH,
+          preSignatureFailure,
           checkedEvents,
           expectedSequence - 1n,
           previousChainDigest,
@@ -382,8 +402,7 @@ export class PostgresAuditVerifier {
     }
 
     const headSequence = expectedSequence - 1n;
-    if (checkpoint) {
-      const checkpointSequence = BigInt(checkpoint.chainSequence);
+    if (checkpoint && checkpointSequence !== undefined) {
       if (checkpointSequence > headSequence) {
         return {
           valid: false,
@@ -394,18 +413,18 @@ export class PostgresAuditVerifier {
           brokenSequence: checkpoint.chainSequence,
         };
       }
-      if (checkpointSequence > 0n) {
-        const localDigest = digestAtSequence.get(checkpoint.chainSequence);
-        if (localDigest !== checkpoint.chainDigest) {
-          return {
-            valid: false,
-            checkedEvents,
-            headSequence: headSequence.toString(10),
-            ...(previousChainDigest ? { headDigest: previousChainDigest } : {}),
-            failure: AuditVerificationFailure.CHECKPOINT_DIGEST_MISMATCH,
-            brokenSequence: checkpoint.chainSequence,
-          };
-        }
+      if (
+        checkpointSequence > 0n &&
+        digestAtSequence.get(checkpoint.chainSequence) !== checkpoint.chainDigest
+      ) {
+        return {
+          valid: false,
+          checkedEvents,
+          headSequence: headSequence.toString(10),
+          ...(previousChainDigest ? { headDigest: previousChainDigest } : {}),
+          failure: AuditVerificationFailure.CHECKPOINT_DIGEST_MISMATCH,
+          brokenSequence: checkpoint.chainSequence,
+        };
       }
     }
 
@@ -420,70 +439,39 @@ export class PostgresAuditVerifier {
   private async verifyCheckpoint(
     checkpoint: AuditChainCheckpoint,
     expectedOrganizationId: string,
-  ): Promise<AuditVerificationFailure | undefined> {
+  ): Promise<{ readonly sequence?: bigint; readonly failure?: AuditVerificationFailure }> {
+    const sequence = parseNonNegativeInteger(checkpoint.chainSequence);
     if (
+      sequence === undefined ||
       checkpoint.version !== AUDIT_CHAIN_VERSION ||
-      checkpoint.organizationId !== expectedOrganizationId
+      checkpoint.organizationId !== expectedOrganizationId ||
+      !checkpoint.issuedAt ||
+      !checkpoint.signingKeyId ||
+      (sequence === 0n && checkpoint.chainDigest !== null) ||
+      (sequence > 0n && !checkpoint.chainDigest)
     ) {
-      return AuditVerificationFailure.INVALID_CHECKPOINT_SIGNATURE;
+      return { failure: AuditVerificationFailure.MALFORMED_CHECKPOINT };
     }
+
     const publicKey = await this.verificationKeys.resolvePublicKey(checkpoint.signingKeyId);
     if (!publicKey) {
-      return AuditVerificationFailure.CHECKPOINT_UNKNOWN_KEY;
+      return { failure: AuditVerificationFailure.CHECKPOINT_UNKNOWN_KEY };
     }
     const { signature, ...unsigned } = checkpoint;
-    return verifyEd25519(
-      canonicalJson({ type: AUDIT_CHECKPOINT_TYPE, ...unsigned }),
-      Buffer.from(signature, "base64url"),
-      publicKey,
-    )
-      ? undefined
-      : AuditVerificationFailure.INVALID_CHECKPOINT_SIGNATURE;
+    if (
+      !verifyEd25519(
+        canonicalJson({ type: AUDIT_CHECKPOINT_TYPE, ...unsigned }),
+        Buffer.from(signature, "base64url"),
+        publicKey,
+      )
+    ) {
+      return { failure: AuditVerificationFailure.INVALID_CHECKPOINT_SIGNATURE };
+    }
+    return { sequence };
   }
 }
 
-interface PersistedAuditEvent {
-  readonly requestId: string;
-  readonly decisionId: string;
-  readonly organizationId: string;
-  readonly userId: string;
-  readonly agentId: string;
-  readonly mandateId: string | null;
-  readonly timestamp: string;
-  readonly protocol: string;
-  readonly operation: string;
-  readonly merchantDomain: string;
-  readonly merchantVendorId: string | null;
-  readonly requestedPayload: unknown;
-  readonly approvedPayload: unknown | null;
-  readonly decisionSnapshot: {
-    readonly decisionId: string;
-    readonly requestId: string;
-    readonly verdict: string;
-    readonly reasons: readonly string[];
-    readonly requestedAmount: unknown;
-    readonly policyAmount?: unknown;
-    readonly approvedAmount?: unknown;
-    readonly mandateId: string;
-    readonly policyId: string;
-    readonly policyVersion: number;
-    readonly eligibleForDelegationAssertion: boolean;
-    readonly approval?: unknown;
-    readonly evaluationLatencyMicros: number;
-    readonly evaluatedAt: string;
-  };
-  readonly verdict: string;
-  readonly reasonCodes: readonly string[];
-  readonly policyVersion: number | null;
-  readonly evaluationLatencyMicros: number;
-  readonly requestDigest: string;
-  readonly reservationId: string | null;
-  readonly upstreamStatus: number | null;
-  readonly metadata: unknown | null;
-}
-
 function persistedEvent(event: GatewayAuditEvent): PersistedAuditEvent {
-  const decisionSnapshot = jsonValue(event.decision) as PersistedAuditEvent["decisionSnapshot"];
   return {
     requestId: event.requestId,
     decisionId: event.decisionId,
@@ -501,11 +489,11 @@ function persistedEvent(event: GatewayAuditEvent): PersistedAuditEvent {
       event.approvedPayload === undefined
         ? null
         : jsonValue(redactSensitivePayload(event.approvedPayload)),
-    decisionSnapshot,
-    verdict: decisionSnapshot.verdict,
-    reasonCodes: [...decisionSnapshot.reasons],
-    policyVersion: decisionSnapshot.policyVersion,
-    evaluationLatencyMicros: decisionSnapshot.evaluationLatencyMicros,
+    decisionSnapshot: jsonValue(event.decision),
+    verdict: event.decision.verdict,
+    reasonCodes: [...event.decision.reasons],
+    policyVersion: event.decision.policyVersion,
+    evaluationLatencyMicros: event.decision.evaluationLatencyMicros,
     requestDigest: event.requestDigest,
     reservationId: event.reservationId ?? null,
     upstreamStatus: event.upstreamStatus ?? null,
@@ -528,7 +516,7 @@ function persistedEventFromRow(row: AuditLogRow): PersistedAuditEvent {
     merchantVendorId: row.merchantVendorId,
     requestedPayload: row.requestedPayload,
     approvedPayload: row.approvedPayload,
-    decisionSnapshot: row.decisionSnapshot as PersistedAuditEvent["decisionSnapshot"],
+    decisionSnapshot: row.decisionSnapshot,
     verdict: row.verdict,
     reasonCodes: row.reasonCodes,
     policyVersion: row.policyVersion,
@@ -540,6 +528,24 @@ function persistedEventFromRow(row: AuditLogRow): PersistedAuditEvent {
   };
 }
 
+function validateRowStructure(
+  row: AuditLogRow,
+  sequence: bigint,
+  expectedSequence: bigint,
+  previousChainDigest: string | undefined,
+): AuditVerificationFailure | undefined {
+  if (row.chainVersion !== AUDIT_CHAIN_VERSION) {
+    return AuditVerificationFailure.UNSUPPORTED_CHAIN_VERSION;
+  }
+  if (sequence !== expectedSequence) {
+    return AuditVerificationFailure.SEQUENCE_GAP;
+  }
+  if ((row.previousChainDigest ?? undefined) !== previousChainDigest) {
+    return AuditVerificationFailure.PREVIOUS_DIGEST_MISMATCH;
+  }
+  return undefined;
+}
+
 function jsonValue(value: unknown): unknown {
   return value === undefined ? null : JSON.parse(canonicalJson(value));
 }
@@ -548,7 +554,7 @@ function computeChainDigest(args: {
   readonly organizationId: string;
   readonly chainSequence: bigint;
   readonly eventDigest: string;
-  readonly previousChainDigest?: string;
+  readonly previousChainDigest: string | undefined;
 }): string {
   return sha256Base64Url(
     canonicalJson({
@@ -566,7 +572,7 @@ function signaturePayload(args: {
   readonly organizationId: string;
   readonly chainSequence: bigint;
   readonly eventDigest: string;
-  readonly previousChainDigest?: string;
+  readonly previousChainDigest: string | undefined;
   readonly chainDigest: string;
   readonly signingKeyId: string;
 }): string {
@@ -580,6 +586,17 @@ function signaturePayload(args: {
     chainDigest: args.chainDigest,
     signingKeyId: args.signingKeyId,
   });
+}
+
+function parseNonNegativeInteger(value: string): bigint | undefined {
+  if (!/^\d+$/.test(value)) {
+    return undefined;
+  }
+  try {
+    return BigInt(value);
+  } catch {
+    return undefined;
+  }
 }
 
 function failureResult(
