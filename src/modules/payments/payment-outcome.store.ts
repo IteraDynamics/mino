@@ -36,7 +36,7 @@ export interface PaymentOutcomeRecord {
   readonly forwardedAt?: Date;
   readonly resolvedAt?: Date;
   readonly lastReconciledAt?: Date;
-  readonly reconcileAttempts: number;
+  readonly reconcileAttempts?: number;
   readonly nextReconcileAt?: Date;
   readonly reconciliationLeaseOwner?: string;
   readonly reconciliationLeaseExpiresAt?: Date;
