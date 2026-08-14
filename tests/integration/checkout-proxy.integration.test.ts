@@ -3,6 +3,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createClient } from "redis";
 import { ApprovalMode, type AgentSpendMandate, type MandateTokenClaims } from "../../src/domain/mandates/mandate.types.js";
 import { DecisionVerdict } from "../../src/domain/evaluation/evaluation.types.js";
+import { DecisionReason } from "../../src/domain/evaluation/decision-reasons.js";
 import { sha256Hex } from "../../src/infrastructure/crypto/canonical-json.js";
 import { MandateTokenService } from "../../src/modules/mandates/mandate-token.service.js";
 import {
@@ -23,6 +24,7 @@ import {
 } from "../../src/modules/proxy/checkout-proxy.service.js";
 import type { ACPMerchantClient, MerchantEndpoint } from "../../src/modules/proxy/merchant-client.js";
 import { AuthorizationReservationService, type RedisScriptClient } from "../../src/modules/spending/authorization-reservation.service.js";
+import { MemoryHumanApprovalService } from "../helpers/memory-human-approval.service.js";
 
 const integration = process.env.RUN_INTEGRATION_TESTS === "1" ? describe : describe.skip;
 const REDIS_URL = process.env.REDIS_URL ?? "redis://127.0.0.1:6379";
@@ -103,6 +105,7 @@ class MemoryPaymentOutcomeStore implements PaymentOutcomeStore {
       amountMinor: input.amountMinor,
       currency: input.currency,
       status: PaymentOutcomeStatus.FORWARDING,
+      reconcileAttempts: 0,
       createdAt: input.now,
       updatedAt: input.now,
       forwardedAt: input.now,
@@ -269,10 +272,10 @@ integration("CheckoutProxyService with real Redis reservation state", () => {
     let authoritativeSession: ReturnType<typeof checkoutSession> & { order?: unknown } =
       args.session ?? checkoutSession();
     let completeCalls = 0;
-    let approvalEvents = 0;
     const audits: unknown[] = [];
     let delegationObserved = false;
     const paymentOutcomes = new MemoryPaymentOutcomeStore();
+    const approvals = new MemoryHumanApprovalService(generateId);
 
     const merchantClient: ACPMerchantClient = {
       async createCheckout() {
@@ -346,11 +349,7 @@ integration("CheckoutProxyService with real Redis reservation state", () => {
           return "integration-delegation-assertion";
         },
       },
-      approvals: {
-        async emit() {
-          approvalEvents += 1;
-        },
-      },
+      approvals,
       audit: {
         async record(event) {
           audits.push(event);
@@ -388,11 +387,17 @@ integration("CheckoutProxyService with real Redis reservation state", () => {
       input,
       mandate,
       paymentOutcomes,
+      approvals,
       setAuthoritativeSession(value: ReturnType<typeof checkoutSession>) {
         authoritativeSession = value;
       },
       state() {
-        return { completeCalls, approvalEvents, audits, delegationObserved };
+        return {
+          completeCalls,
+          approvalEvents: approvals.notificationCount,
+          audits,
+          delegationObserved,
+        };
       },
     };
   }
@@ -482,7 +487,7 @@ integration("CheckoutProxyService with real Redis reservation state", () => {
     expect(await redis.zCard(`mino:v1:auth:{${h.mandate.id}}:committed`)).toBe(0);
   });
 
-  it("holds an over-limit cart for human approval without reserving or forwarding payment", async () => {
+  it("holds an over-limit cart for durable human approval without forwarding payment", async () => {
     const base = buildHarness();
     const h = buildHarness({
       mandate: {
@@ -499,9 +504,62 @@ integration("CheckoutProxyService with real Redis reservation state", () => {
     );
 
     expect(result.decision.verdict).toBe(DecisionVerdict.PENDING_HUMAN_APPROVAL);
+    expect(result.approvalRequestId).toBeDefined();
     expect(h.state().completeCalls).toBe(0);
     expect(h.state().approvalEvents).toBe(1);
     expect(await redis.zCard(`mino:v1:auth:{${h.mandate.id}}:reservations`)).toBe(0);
+  });
+
+  it("forwards the exact transaction-limit request after dual approval and commits once", async () => {
+    const base = buildHarness();
+    const h = buildHarness({
+      mandate: {
+        ...base.mandate,
+        id: "mandate-approved-retry",
+        maxBudgetPerTransactionMinor: 4_000n,
+        approvalMode: ApprovalMode.DUAL_SIGNATURE_SLACK,
+      },
+      session: checkoutSession(5_000),
+    });
+    const key = "idem-approved-retry";
+    const body = { payment_data: { token: "opaque" } };
+
+    const pending = await h.proxy.completeCheckout(h.input(body, key));
+    expect(pending.decision.verdict).toBe(DecisionVerdict.PENDING_HUMAN_APPROVAL);
+    expect(h.state().completeCalls).toBe(0);
+    expect(await redis.zCard(`mino:v1:auth:{${h.mandate.id}}:reservations`)).toBe(0);
+
+    await h.approvals.approveLatest(now);
+    const approved = await h.proxy.completeCheckout(h.input(body, key));
+
+    expect(approved.decision.verdict).toBe(DecisionVerdict.ALLOW);
+    expect(approved.decision.reasons).toContain(DecisionReason.HUMAN_APPROVAL_GRANTED);
+    expect(approved.approvalRequestId).toBe(pending.approvalRequestId);
+    expect(h.state().completeCalls).toBe(1);
+    expect(await redis.zCard(`mino:v1:auth:{${h.mandate.id}}:committed`)).toBe(1);
+  });
+
+  it("blocks an exact retry after human rejection without forwarding payment", async () => {
+    const base = buildHarness();
+    const h = buildHarness({
+      mandate: {
+        ...base.mandate,
+        id: "mandate-rejected-retry",
+        maxBudgetPerTransactionMinor: 4_000n,
+        approvalMode: ApprovalMode.DUAL_SIGNATURE_SLACK,
+      },
+      session: checkoutSession(5_000),
+    });
+    const key = "idem-rejected-retry";
+    const body = { payment_data: { token: "opaque" } };
+
+    await h.proxy.completeCheckout(h.input(body, key));
+    await h.approvals.rejectLatest(now);
+    const rejected = await h.proxy.completeCheckout(h.input(body, key));
+
+    expect(rejected.decision.verdict).toBe(DecisionVerdict.BLOCK);
+    expect(rejected.decision.reasons).toContain(DecisionReason.HUMAN_APPROVAL_REJECTED);
+    expect(h.state().completeCalls).toBe(0);
   });
 
   it("reconciles a lost merchant response without forwarding a second payment", async () => {
