@@ -155,7 +155,7 @@ export class ApprovalNotificationOutboxWorker {
               jsonb_build_object(
                 'status', 'LEASED',
                 'attempts', coalesce((ar."approvalData"->'notification'->>'attempts')::int, 0) + 1,
-                'leaseOwner', $3,
+                'leaseOwner', $3::text,
                 'leaseExpiresAt', $4::timestamptz,
                 'lastAttemptAt', $2::timestamptz
               )
@@ -181,7 +181,7 @@ export class ApprovalNotificationOutboxWorker {
           )
         where "id" = $1::uuid
           and "approvalData"->'notification'->>'status' = 'LEASED'
-          and "approvalData"->'notification'->>'leaseOwner' = $2`,
+          and "approvalData"->'notification'->>'leaseOwner' = $2::text`,
       [approvalRequestId, workerId, now],
     );
     if (result.rowCount !== 1) {
@@ -206,7 +206,7 @@ export class ApprovalNotificationOutboxWorker {
           )
         where "id" = $1::uuid
           and "approvalData"->'notification'->>'status' = 'LEASED'
-          and "approvalData"->'notification'->>'leaseOwner' = $2`,
+          and "approvalData"->'notification'->>'leaseOwner' = $2::text`,
       [row.id, workerId, nextAttemptAt],
     );
     if (result.rowCount !== 1) {
@@ -225,11 +225,11 @@ export class ApprovalNotificationOutboxWorker {
           set "approvalData" = coalesce("approvalData", '{}'::jsonb) || jsonb_build_object(
             'notification',
             (coalesce("approvalData"->'notification', '{}'::jsonb) - 'leaseOwner' - 'leaseExpiresAt' - 'nextAttemptAt') ||
-            jsonb_build_object('status', 'DEAD_LETTER', 'deadLetteredAt', $3::timestamptz, 'lastErrorCode', $4)
+            jsonb_build_object('status', 'DEAD_LETTER', 'deadLetteredAt', $3::timestamptz, 'lastErrorCode', $4::text)
           )
         where "id" = $1::uuid
           and "approvalData"->'notification'->>'status' = 'LEASED'
-          and "approvalData"->'notification'->>'leaseOwner' = $2`,
+          and "approvalData"->'notification'->>'leaseOwner' = $2::text`,
       [approvalRequestId, workerId, now, reason],
     );
     if (result.rowCount !== 1) {
@@ -241,7 +241,7 @@ export class ApprovalNotificationOutboxWorker {
     const result = await this.sql.query(
       `update "ApprovalRequest"
           set "status" = 'EXPIRED',
-              "resolvedAt" = coalesce("resolvedAt", $3),
+              "resolvedAt" = coalesce("resolvedAt", $3::timestamptz),
               "approvalData" = coalesce("approvalData", '{}'::jsonb) || jsonb_build_object(
                 'notification',
                 (coalesce("approvalData"->'notification', '{}'::jsonb) - 'leaseOwner' - 'leaseExpiresAt' - 'nextAttemptAt') ||
@@ -253,7 +253,7 @@ export class ApprovalNotificationOutboxWorker {
               )
         where "id" = $1::uuid
           and "approvalData"->'notification'->>'status' = 'LEASED'
-          and "approvalData"->'notification'->>'leaseOwner' = $2`,
+          and "approvalData"->'notification'->>'leaseOwner' = $2::text`,
       [approvalRequestId, workerId, now],
     );
     if (result.rowCount !== 1) {
