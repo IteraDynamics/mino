@@ -1,9 +1,14 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import { registerACPRoutes } from "./api/acp.routes.js";
+import { registerApprovalRoutes } from "./api/approval.routes.js";
+import type { HumanApprovalService } from "./modules/approvals/durable-approval.service.js";
+import type { ApprovalResolutionAuthenticator } from "./modules/approvals/approval-resolution-authenticator.js";
 import type { CheckoutProxyService } from "./modules/proxy/checkout-proxy.service.js";
 
 export interface CreateAppOptions {
   readonly proxy: CheckoutProxyService;
+  readonly approvals?: HumanApprovalService;
+  readonly approvalAuthenticator?: ApprovalResolutionAuthenticator;
   readonly logger?: boolean;
   readonly now?: () => Date;
 }
@@ -16,6 +21,17 @@ export async function createApp(options: CreateAppOptions): Promise<FastifyInsta
     proxy: options.proxy,
     ...(options.now ? { now: options.now } : {}),
   });
+
+  if (options.approvals || options.approvalAuthenticator) {
+    if (!options.approvals || !options.approvalAuthenticator) {
+      throw new Error("Approval routes require both the approval service and resolution authenticator");
+    }
+    await registerApprovalRoutes(app, {
+      approvals: options.approvals,
+      authenticator: options.approvalAuthenticator,
+      ...(options.now ? { now: options.now } : {}),
+    });
+  }
 
   return app;
 }
