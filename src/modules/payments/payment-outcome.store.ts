@@ -67,6 +67,10 @@ export interface BeginPaymentOutcomeResult {
 }
 
 export interface PaymentOutcomeStore {
+  getByIdempotency(
+    organizationId: string,
+    idempotencyKey: string,
+  ): Promise<PaymentOutcomeRecord | undefined>;
   begin(input: BeginPaymentOutcomeInput): Promise<BeginPaymentOutcomeResult>;
   markUnknown(
     outcomeId: string,
@@ -121,6 +125,20 @@ interface PaymentOutcomeRow extends QueryResultRow {
 export class PostgresPaymentOutcomeStore implements PaymentOutcomeStore {
   public constructor(private readonly sql: SqlClient) {}
 
+  public async getByIdempotency(
+    organizationId: string,
+    idempotencyKey: string,
+  ): Promise<PaymentOutcomeRecord | undefined> {
+    const result = await this.sql.query<PaymentOutcomeRow>(
+      `select *
+         from "PaymentOutcome"
+        where "organizationId" = $1::uuid
+          and "idempotencyKey" = $2`,
+      [organizationId, idempotencyKey],
+    );
+    return result.rows[0] ? mapRow(result.rows[0]) : undefined;
+  }
+
   public async begin(input: BeginPaymentOutcomeInput): Promise<BeginPaymentOutcomeResult> {
     const inserted = await this.sql.query<PaymentOutcomeRow>(
       `insert into "PaymentOutcome" (
@@ -158,7 +176,7 @@ export class PostgresPaymentOutcomeStore implements PaymentOutcomeStore {
       return { kind: BeginPaymentOutcomeKind.CREATED, outcome: mapRow(created) };
     }
 
-    const existing = await this.findByIdempotency(input.organizationId, input.idempotencyKey);
+    const existing = await this.getByIdempotency(input.organizationId, input.idempotencyKey);
     if (!existing) {
       throw new Error("Payment outcome uniqueness conflict could not be reloaded");
     }
@@ -256,20 +274,6 @@ export class PostgresPaymentOutcomeStore implements PaymentOutcomeStore {
       [outcomeId, now],
       outcomeId,
     );
-  }
-
-  private async findByIdempotency(
-    organizationId: string,
-    idempotencyKey: string,
-  ): Promise<PaymentOutcomeRecord | undefined> {
-    const result = await this.sql.query<PaymentOutcomeRow>(
-      `select *
-         from "PaymentOutcome"
-        where "organizationId" = $1::uuid
-          and "idempotencyKey" = $2`,
-      [organizationId, idempotencyKey],
-    );
-    return result.rows[0] ? mapRow(result.rows[0]) : undefined;
   }
 
   private async updateOne(
