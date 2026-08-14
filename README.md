@@ -24,6 +24,7 @@ The current branch contains the policy kernel plus the ACP proxy, payment-reconc
 16. **External audit checkpoints** — Mino can issue a signed checkpoint of an organization's current audit-chain head. Retaining that checkpoint outside the same mutable database provides an anchor that detects truncation of the newest ledger suffix.
 17. **Production application composition** — a concrete composition root now connects PostgreSQL, Prisma, Redis, repositories, key providers, policy evaluation, reservations, approvals, payment outcomes, audit, ACP forwarding, delegation assertions, and the reconciliation worker into one runnable Fastify service. Startup validates critical dependencies and security configuration, `/readyz` checks data-plane readiness, and shutdown closes application resources cleanly.
 18. **Durable approval notification delivery** — the persisted `ApprovalRequest` itself is the durable outbox signal, so the request path does not depend on an approval webhook being online. A PostgreSQL-backed worker leases pending deliveries with `FOR UPDATE SKIP LOCKED`, retries failures with bounded exponential backoff, records only sanitized error codes, dead-letters exhausted/expired work, and reuses the stable approval-request ID as the event ID for at-least-once downstream deduplication.
+19. **Continuous payment recovery and operational monitoring** — production now schedules payment reconciliation continuously on a non-overlapping worker loop. A read-only PostgreSQL monitor reports unresolved counts, stale outcomes, high retry counts, and oldest unresolved age, with structured warnings when payment uncertainty exceeds the normal recovery window. Shutdown drains in-flight worker work before closing data stores.
 
 ## ACP trust boundary
 
@@ -31,7 +32,7 @@ Mino deliberately does **not** authorize against prices supplied by the agent. F
 
 Human approval does not weaken this boundary. A pending payment is not forwarded. After approval, the agent must retry the same idempotency key and exact payment request; Mino refetches the current merchant CheckoutSession and re-runs the current mandate and machine controls. Only the same reviewed soft spend-limit breach may be converted to `ALLOW`.
 
-Once payment dispatch begins, absence of a response is not interpreted as failure. Mino keeps the allowance held until success or failure is proven. A retry with the same idempotency key either replays a terminal durable result or uses the latest merchant CheckoutSession to reconcile the unresolved outcome without forwarding another payment. The background reconciler can perform the same authoritative recovery without an agent retry. See `docs/payment-outcome-reconciliation.md`.
+Once payment dispatch begins, absence of a response is not interpreted as failure. Mino keeps the allowance held until success or failure is proven. A retry with the same idempotency key either replays a terminal durable result or uses the latest merchant CheckoutSession to reconcile the unresolved outcome without forwarding another payment. The continuously scheduled background reconciler performs the same authoritative recovery without an agent retry. See `docs/payment-outcome-reconciliation.md`.
 
 The MVP exposes:
 
@@ -82,7 +83,7 @@ npm start
 
 Production startup fails closed when required data stores, keys, or security configuration are unavailable or malformed. `GET /healthz` is process liveness; `GET /readyz` checks PostgreSQL, Prisma, and Redis connectivity before reporting the service ready for transaction traffic. `SIGTERM` and `SIGINT` trigger an idempotent graceful shutdown.
 
-The server runs approval-notification outbox delivery independently from transaction handling on a non-overlapping polling loop. PostgreSQL leases make that delivery work safe to claim across multiple Mino instances; transient failures are retried without failing the original pending-approval response. Continuous scheduling of the payment reconciliation worker and operational alerting for unresolved outcomes remain separate production work.
+The server continuously runs both approval-notification delivery and payment reconciliation on non-overlapping worker loops. PostgreSQL leases remain the cross-instance claim boundary. Unresolved payment outcomes are monitored independently: short-lived uncertainty is logged informationally, while outcomes older than the operational threshold or above the retry threshold emit structured warnings suitable for routing into a deployment's metrics, SIEM, paging, or alerting stack. Mino does not claim a built-in vendor-specific operational alert transport in this slice.
 
 Private signing keys and merchant reconciliation credentials are supplied from deployment configuration, not persisted in Mino's transactional tables. The current environment-backed provider is a concrete composition boundary; managed vault/KMS integration remains production operations work. See `docs/production-runtime.md`.
 
@@ -130,7 +131,7 @@ npm run test:integration
 
 ## Next implementation slice
 
-- Add a continuously scheduled process/loop around the background payment reconciler and operational alerting for unresolved outcomes.
 - Add managed secret-vault/KMS integration and operational key-rotation procedures.
 - Add operational export/retention for signed audit checkpoints in a separate trust domain.
 - Expand ACP proxy coverage to retrieve/update/cancel while keeping only payment-bearing operations behind spend reservation.
+- Add vendor-specific metrics/alert transports, tracing, and operational dashboards as deployment needs mature.
