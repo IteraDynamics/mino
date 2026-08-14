@@ -736,7 +736,7 @@ function completionRequestDigest(input: CompleteCheckoutProxyInput, intent: Chec
     canonicalJson({
       merchantId: input.merchantId,
       checkoutSessionId: input.checkoutSessionId,
-      request: redactSensitivePayload(input.body),
+      requestBodyDigest: sha256Base64Url(canonicalJson(input.body)),
       authorizationState: {
         merchant: intent.merchant,
         currency: intent.total.currency,
