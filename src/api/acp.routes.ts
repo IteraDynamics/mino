@@ -11,6 +11,7 @@ import {
 import { DecisionVerdict } from "../domain/evaluation/evaluation.types.js";
 import { MandateTokenError } from "../modules/mandates/mandate-token.service.js";
 import { AgentRequestError } from "../modules/agents/agent-request-verifier.js";
+import { ApprovalRequestConflictError } from "../modules/approvals/durable-approval.service.js";
 
 export interface ACPRoutesOptions {
   readonly proxy: CheckoutProxyService;
@@ -115,7 +116,10 @@ function optionalHeader(request: FastifyRequest, name: string): string | undefin
   return typeof value === "string" ? value : undefined;
 }
 
-function sendDecision(reply: FastifyReply, result: Awaited<ReturnType<CheckoutProxyService["completeCheckout"]>>) {
+function sendDecision(
+  reply: FastifyReply,
+  result: Awaited<ReturnType<CheckoutProxyService["completeCheckout"]>>,
+) {
   const status =
     result.decision.verdict === DecisionVerdict.ALLOW
       ? result.upstream?.status ?? 200
@@ -126,13 +130,16 @@ function sendDecision(reply: FastifyReply, result: Awaited<ReturnType<CheckoutPr
   return reply.code(status).send({
     decision: serializeDecision(result.decision),
     ...(result.checkoutSessionId ? { checkout_session_id: result.checkoutSessionId } : {}),
+    ...(result.approvalRequestId ? { approval_request_id: result.approvalRequestId } : {}),
     ...(result.paymentOutcomeId ? { payment_outcome_id: result.paymentOutcomeId } : {}),
     ...(result.replayed ? { idempotent_replayed: true } : {}),
     ...(result.upstream ? { upstream: result.upstream.body } : {}),
   });
 }
 
-function serializeDecision(decision: Awaited<ReturnType<CheckoutProxyService["completeCheckout"]>>["decision"]) {
+function serializeDecision(
+  decision: Awaited<ReturnType<CheckoutProxyService["completeCheckout"]>>["decision"],
+) {
   return JSON.parse(
     JSON.stringify(decision, (_key, value) =>
       typeof value === "bigint" ? value.toString(10) : value,
@@ -148,7 +155,10 @@ function sendError(reply: FastifyReply, error: unknown) {
   ) {
     return reply.code(401).send({
       error: "UNAUTHORIZED",
-      reason: error instanceof MandateTokenError || error instanceof AgentRequestError ? error.code : error.message,
+      reason:
+        error instanceof MandateTokenError || error instanceof AgentRequestError
+          ? error.code
+          : error.message,
     });
   }
 
@@ -159,7 +169,7 @@ function sendError(reply: FastifyReply, error: unknown) {
     });
   }
 
-  if (error instanceof IdempotencyConflictError) {
+  if (error instanceof IdempotencyConflictError || error instanceof ApprovalRequestConflictError) {
     return reply.code(409).send({
       error: "IDEMPOTENCY_CONFLICT",
       reason: error.message,
