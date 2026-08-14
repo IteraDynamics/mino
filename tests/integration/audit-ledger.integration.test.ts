@@ -58,6 +58,7 @@ integration("PostgresAuditLedger", () => {
   beforeEach(async () => {
     activeKey = { keyId: "audit-k1", privateKey: key1.privateKey };
     await pool.query('delete from "AuditLog" where "organizationId" = $1::uuid', [ids.organization]);
+    await pool.query('delete from "AuditChainHead" where "organizationId" = $1::uuid', [ids.organization]);
     await pool.query('delete from "AgentMandate" where "id" = $1::uuid', [ids.mandate]);
     await pool.query('delete from "Policy" where "id" = $1::uuid', [ids.policy]);
     await pool.query('delete from "AgentIdentity" where "id" = $1::uuid', [ids.agent]);
@@ -124,9 +125,10 @@ integration("PostgresAuditLedger", () => {
   });
 
   it("serializes concurrent events into one signed organization chain and redacts secrets defensively", async () => {
-    await Promise.all(
+    const writes = await Promise.allSettled(
       Array.from({ length: 12 }, (_, index) => ledger.record(event(index + 1))),
     );
+    expect(writes.filter((result) => result.status === "rejected")).toHaveLength(0);
 
     const rows = await pool.query<{
       chainSequence: string;
@@ -140,6 +142,12 @@ integration("PostgresAuditLedger", () => {
         order by "chainSequence"`,
       [ids.organization],
     );
+    const head = await pool.query<{ chainSequence: string; chainDigest: string | null }>(
+      `select "chainSequence"::text as "chainSequence", "chainDigest"
+         from "AuditChainHead"
+        where "organizationId" = $1::uuid`,
+      [ids.organization],
+    );
 
     expect(rows.rows.map((row) => row.chainSequence)).toEqual(
       Array.from({ length: 12 }, (_, index) => String(index + 1)),
@@ -148,6 +156,10 @@ integration("PostgresAuditLedger", () => {
     for (let index = 1; index < rows.rows.length; index += 1) {
       expect(rows.rows[index]?.previousChainDigest).toBe(rows.rows[index - 1]?.chainDigest);
     }
+    expect(head.rows[0]).toEqual({
+      chainSequence: "12",
+      chainDigest: rows.rows[11]?.chainDigest,
+    });
     expect(rows.rows[0]?.requestedPayload.payment_data?.token).toBe("[REDACTED]");
     expect(rows.rows[0]?.requestedPayload.payment_data?.card_number).toBe("[REDACTED]");
 
@@ -192,16 +204,28 @@ integration("PostgresAuditLedger", () => {
     });
   });
 
-  it("uses a signed external checkpoint to detect tail truncation", async () => {
+  it("uses a signed external checkpoint to detect tail truncation even if the mutable local head is rewritten", async () => {
     await ledger.record(event(1));
     await ledger.record(event(2));
     await ledger.record(event(3));
     const checkpoint = await ledger.issueCheckpoint(ids.organization, new Date(now.getTime() + 10_000));
+    const sequenceTwo = await pool.query<{ chainDigest: string }>(
+      `select "chainDigest"
+         from "AuditLog"
+        where "organizationId" = $1::uuid and "chainSequence" = 2`,
+      [ids.organization],
+    );
 
     await pool.query(
       `delete from "AuditLog"
         where "organizationId" = $1::uuid and "chainSequence" = 3`,
       [ids.organization],
+    );
+    await pool.query(
+      `update "AuditChainHead"
+          set "chainSequence" = 2, "chainDigest" = $2
+        where "organizationId" = $1::uuid`,
+      [ids.organization, sequenceTwo.rows[0]?.chainDigest],
     );
 
     const localOnly = await verifier.verifyOrganization(ids.organization);
