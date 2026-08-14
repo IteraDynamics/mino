@@ -189,6 +189,9 @@ integration("BackgroundPaymentReconciler", () => {
         releases += 1;
         return true;
       },
+      async releaseForApproval() {
+        throw new Error("releaseForApproval is not used by the background reconciler");
+      },
       async holdForReconciliation() {
         holds += 1;
         return true;
