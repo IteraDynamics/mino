@@ -10,9 +10,11 @@ The canonical event is hashed with SHA-256 to produce `eventDigest`.
 
 ## Organization-local chain
 
-Each organization has an independent monotonically increasing `chainSequence`. Writers serialize on a PostgreSQL transaction-scoped advisory lock derived from the organization ID and the database also enforces a unique `(organizationId, chainSequence)` index.
+Each organization has an independent monotonically increasing `chainSequence`. PostgreSQL stores one `AuditChainHead` row per organization. A writer creates that row idempotently when necessary and then locks it with `SELECT ... FOR UPDATE` inside the same transaction that inserts the audit event and advances the chain head. The database also enforces a unique `(organizationId, chainSequence)` index on `AuditLog`.
 
-For each row, Mino computes a chain digest over:
+This gives every organization an explicit serialization point: concurrent legitimate writers cannot independently read the same prior sequence and create competing next entries. The `AuditChainHead` row is operational mutable state used to serialize writers; it is not treated as an external integrity anchor.
+
+For each audit row, Mino computes a chain digest over:
 
 - chain format/version
 - organization ID
@@ -44,7 +46,7 @@ This detects payload or query-column modification, signature modification, reord
 
 ## Tail truncation and signed checkpoints
 
-A hash chain stored only in the same mutable database has a fundamental limitation: if a privileged attacker deletes only the newest suffix, the remaining prefix can still be internally valid. No algorithm can prove that a later suffix once existed if every copy of that fact lives in the same store and is deleted with it.
+A hash chain stored only in the same mutable database has a fundamental limitation: if a privileged attacker deletes the newest suffix and also rewrites database-local chain-head state to the remaining valid prefix, the surviving prefix can still be internally valid. No algorithm can prove that a later suffix once existed if every copy of that fact lives in the same trust domain and is deleted or rewritten with it.
 
 Mino therefore supports signed chain checkpoints. `issueCheckpoint()` returns a signed statement containing the organization ID, current chain sequence, current chain digest, issue time, and signing key ID.
 
