@@ -6,6 +6,7 @@ const MAX_SAFE_MINOR_UNITS = BigInt(Number.MAX_SAFE_INTEGER);
 const DEFAULT_ROLLING_WINDOW_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_RESERVATION_TTL_MS = 5 * 60 * 1000;
 const DEFAULT_IDEMPOTENCY_TTL_MS = 25 * 60 * 60 * 1000;
+const DEFAULT_RECONCILIATION_HOLD_MS = 26 * 60 * 60 * 1000;
 
 export interface RedisScriptClient {
   eval(
@@ -48,12 +49,14 @@ export interface AuthorizationReservations {
   tryReserve(input: ReservationAttemptInput): Promise<ReservationAttemptResult>;
   commit(mandateId: string, reservationId: string, now: Date): Promise<boolean>;
   release(mandateId: string, reservationId: string): Promise<boolean>;
+  holdForReconciliation(mandateId: string, reservationId: string, now: Date): Promise<boolean>;
 }
 
 export interface AuthorizationReservationServiceOptions {
   readonly rollingWindowMs?: number;
   readonly reservationTtlMs?: number;
   readonly idempotencyTtlMs?: number;
+  readonly reconciliationHoldMs?: number;
   readonly keyPrefix?: string;
 }
 
@@ -61,6 +64,7 @@ export class AuthorizationReservationService implements AuthorizationReservation
   private readonly rollingWindowMs: number;
   private readonly reservationTtlMs: number;
   private readonly idempotencyTtlMs: number;
+  private readonly reconciliationHoldMs: number;
   private readonly keyPrefix: string;
 
   public constructor(
@@ -70,6 +74,7 @@ export class AuthorizationReservationService implements AuthorizationReservation
     this.rollingWindowMs = options.rollingWindowMs ?? DEFAULT_ROLLING_WINDOW_MS;
     this.reservationTtlMs = options.reservationTtlMs ?? DEFAULT_RESERVATION_TTL_MS;
     this.idempotencyTtlMs = options.idempotencyTtlMs ?? DEFAULT_IDEMPOTENCY_TTL_MS;
+    this.reconciliationHoldMs = options.reconciliationHoldMs ?? DEFAULT_RECONCILIATION_HOLD_MS;
     this.keyPrefix = options.keyPrefix ?? "mino:v1:auth";
   }
 
@@ -127,6 +132,26 @@ export class AuthorizationReservationService implements AuthorizationReservation
         `${this.baseKey(mandateId)}:reservation:${reservationId}`,
       ],
       arguments: [String(this.idempotencyTtlMs)],
+    });
+    return response === 1 || response === "1";
+  }
+
+  public async holdForReconciliation(
+    mandateId: string,
+    reservationId: string,
+    now: Date,
+  ): Promise<boolean> {
+    const response = await this.redis.eval(HOLD_FOR_RECONCILIATION_SCRIPT, {
+      keys: [
+        `${this.baseKey(mandateId)}:reservations`,
+        `${this.baseKey(mandateId)}:reservation:${reservationId}`,
+      ],
+      arguments: [
+        String(now.getTime()),
+        String(this.reconciliationHoldMs),
+        String(this.rollingWindowMs),
+        String(this.idempotencyTtlMs),
+      ],
     });
     return response === 1 || response === "1";
   }
@@ -196,7 +221,6 @@ function parseReservationResponse(response: unknown, currency: string): Reservat
   };
 }
 
-
 function parseMerchantDomains(value: unknown): string[] {
   if (Array.isArray(value)) {
     if (!value.every((entry) => typeof entry === "string")) {
@@ -216,6 +240,7 @@ function parseMerchantDomains(value: unknown): string[] {
 
   throw new Error("Redis returned invalid merchant domains");
 }
+
 function canonicalizeMerchant(domain: string): string {
   const normalized = domain.trim().toLowerCase().replace(/\.$/, "");
   if (!normalized || normalized.includes("|") || normalized.includes("://") || normalized.includes("/")) {
@@ -410,5 +435,32 @@ end
 redis.call('ZREM', KEYS[1], detail.reservation_member)
 detail.status = 'RELEASED'
 redis.call('SET', KEYS[2], cjson.encode(detail), 'PX', tonumber(ARGV[1]))
+return 1
+`;
+
+export const HOLD_FOR_RECONCILIATION_SCRIPT = String.raw`
+local now = tonumber(ARGV[1])
+local hold_ms = tonumber(ARGV[2])
+local rolling_window = tonumber(ARGV[3])
+local detail_ttl = tonumber(ARGV[4])
+local detail_raw = redis.call('GET', KEYS[2])
+if not detail_raw then
+  return 0
+end
+local detail = cjson.decode(detail_raw)
+if detail.status == 'COMMITTED' then
+  return 1
+end
+if detail.status ~= 'RESERVED' then
+  return 0
+end
+local expires_at = now + hold_ms
+redis.call('ZADD', KEYS[1], expires_at, detail.reservation_member)
+redis.call('PEXPIRE', KEYS[1], rolling_window + hold_ms)
+detail.expires_at = expires_at
+detail.reconciliation_hold = true
+detail.reconciliation_held_at = now
+local ttl = math.max(detail_ttl, rolling_window + hold_ms)
+redis.call('SET', KEYS[2], cjson.encode(detail), 'PX', ttl)
 return 1
 `;
