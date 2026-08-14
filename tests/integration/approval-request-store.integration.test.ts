@@ -16,11 +16,11 @@ const DATABASE_URL =
   process.env.DATABASE_URL ?? "postgresql://mino:mino@127.0.0.1:5432/mino?schema=public";
 
 const ids = {
-  organization: "20000000-0000-4000-8000-000000000001",
-  user: "20000000-0000-4000-8000-000000000002",
-  agent: "20000000-0000-4000-8000-000000000003",
-  policy: "20000000-0000-4000-8000-000000000004",
-  mandate: "20000000-0000-4000-8000-000000000005",
+  organization: "30000000-0000-4000-8000-000000000001",
+  user: "30000000-0000-4000-8000-000000000002",
+  agent: "30000000-0000-4000-8000-000000000003",
+  policy: "30000000-0000-4000-8000-000000000004",
+  mandate: "30000000-0000-4000-8000-000000000005",
 };
 const now = new Date("2026-08-14T16:00:00.000Z");
 
@@ -136,14 +136,14 @@ integration("PostgresApprovalRequestStore", () => {
 
   it("creates one durable request and distinguishes replay from idempotency conflict", async () => {
     const first = await store.begin(
-      beginInput({ id: "20000000-0000-4000-8000-000000000006" }),
+      beginInput({ id: "30000000-0000-4000-8000-000000000006" }),
     );
     const replay = await store.begin(
-      beginInput({ id: "20000000-0000-4000-8000-000000000007" }),
+      beginInput({ id: "30000000-0000-4000-8000-000000000007" }),
     );
     const conflict = await store.begin(
       beginInput({
-        id: "20000000-0000-4000-8000-000000000008",
+        id: "30000000-0000-4000-8000-000000000008",
         digest: "changed-digest",
       }),
     );
@@ -157,7 +157,7 @@ integration("PostgresApprovalRequestStore", () => {
   it("resolves dual approval exactly once under concurrent votes", async () => {
     const begun = await store.begin(
       beginInput({
-        id: "20000000-0000-4000-8000-000000000009",
+        id: "30000000-0000-4000-8000-000000000009",
         key: "approval-idem-dual",
       }),
     );
@@ -186,7 +186,7 @@ integration("PostgresApprovalRequestStore", () => {
   it("makes a duplicate same vote idempotent but rejects changing an approver's vote", async () => {
     const begun = await store.begin(
       beginInput({
-        id: "20000000-0000-4000-8000-000000000010",
+        id: "30000000-0000-4000-8000-000000000010",
         key: "approval-idem-duplicate",
       }),
     );
@@ -209,7 +209,7 @@ integration("PostgresApprovalRequestStore", () => {
   it("rejects the request immediately and refuses new votes after terminal resolution", async () => {
     const begun = await store.begin(
       beginInput({
-        id: "20000000-0000-4000-8000-000000000011",
+        id: "30000000-0000-4000-8000-000000000011",
         key: "approval-idem-reject",
       }),
     );
@@ -236,7 +236,7 @@ integration("PostgresApprovalRequestStore", () => {
     const expiresAt = new Date(now.getTime() + 1_000);
     const begun = await store.begin(
       beginInput({
-        id: "20000000-0000-4000-8000-000000000012",
+        id: "30000000-0000-4000-8000-000000000012",
         key: "approval-idem-expired",
         expiresAt,
       }),
