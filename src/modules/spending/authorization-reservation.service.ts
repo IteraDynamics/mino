@@ -160,13 +160,15 @@ function parseReservationResponse(response: unknown, currency: string): Reservat
     reserved_minor: number;
     transactions_last_minute: number;
     distinct_merchants: number;
-    merchant_domains: string[];
+    merchant_domains: unknown;
     replayed?: boolean;
   };
 
   if (!Object.values(ReservationStatus).includes(parsed.status)) {
     throw new Error("Redis returned an unknown reservation status");
   }
+
+  const merchantDomains = parseMerchantDomains(parsed.merchant_domains);
 
   return {
     status: parsed.status,
@@ -188,12 +190,32 @@ function parseReservationResponse(response: unknown, currency: string): Reservat
         currency: currency.toUpperCase(),
         minorUnits: 0n,
       },
-      merchantDomainsInWindow: parsed.merchant_domains,
+      merchantDomainsInWindow: merchantDomains,
     },
     replayed: parsed.replayed ?? false,
   };
 }
 
+
+function parseMerchantDomains(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    if (!value.every((entry) => typeof entry === "string")) {
+      throw new Error("Redis returned invalid merchant domains");
+    }
+    return value;
+  }
+
+  // Redis Lua cjson encodes an empty table as {} rather than [].
+  if (
+    value !== null &&
+    typeof value === "object" &&
+    Object.keys(value).length === 0
+  ) {
+    return [];
+  }
+
+  throw new Error("Redis returned invalid merchant domains");
+}
 function canonicalizeMerchant(domain: string): string {
   const normalized = domain.trim().toLowerCase().replace(/\.$/, "");
   if (!normalized || normalized.includes("|") || normalized.includes("://") || normalized.includes("/")) {
@@ -354,6 +376,13 @@ if detail.status == 'COMMITTED' then
   return 1
 end
 if detail.status ~= 'RESERVED' then
+  return 0
+end
+if detail.expires_at and tonumber(detail.expires_at) <= now then
+  redis.call('ZREM', KEYS[2], detail.reservation_member)
+  detail.status = 'EXPIRED'
+  detail.expired_at = now
+  redis.call('SET', KEYS[4], cjson.encode(detail), 'PX', detail_ttl)
   return 0
 end
 redis.call('ZREM', KEYS[2], detail.reservation_member)

@@ -85,6 +85,6 @@ describe("AuthorizationReservationService", () => {
         requestDigest: "digest",
         now: new Date(),
       }),
-    ).rejects.toThrow(/safe/i);
+    ).rejects.toThrow(/9007199254740991/);
   });
 });

@@ -9,11 +9,13 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "vitest run",
+    "test": "npm run test:unit",
     "test:watch": "vitest",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "prisma:generate": "prisma generate",
-    "prisma:validate": "prisma validate"
+    "prisma:validate": "prisma validate",
+    "test:unit": "vitest run tests/unit",
+    "test:integration": "vitest run tests/integration --no-file-parallelism"
   },
   "dependencies": {
     "@prisma/adapter-pg": "^7.9.1",
