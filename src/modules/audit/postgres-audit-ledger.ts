@@ -127,7 +127,7 @@ export class PostgresAuditLedger implements AuditSink {
     try {
       await tx.query("begin");
       await tx.query(
-        "select pg_advisory_xact_lock(hashtextextended($1, 0))",
+        "select pg_advisory_xact_lock(hashtextextended($1::text, 0))",
         [event.organizationId],
       );
 
@@ -180,21 +180,21 @@ export class PostgresAuditLedger implements AuditSink {
           persisted.decisionId,
           persisted.userId,
           persisted.agentId,
-          persisted.mandateId ?? null,
+          persisted.mandateId,
           event.timestamp,
           persisted.protocol,
           persisted.operation,
           persisted.merchantDomain,
-          persisted.merchantVendorId ?? null,
+          persisted.merchantVendorId,
           JSON.stringify(persisted.requestedPayload),
-          persisted.approvedPayload === undefined ? null : JSON.stringify(persisted.approvedPayload),
+          JSON.stringify(persisted.approvedPayload),
           JSON.stringify(persisted.decisionSnapshot),
-          persisted.decisionSnapshot.verdict,
-          [...persisted.decisionSnapshot.reasons],
-          persisted.decisionSnapshot.policyVersion ?? null,
-          persisted.decisionSnapshot.evaluationLatencyMicros,
-          persisted.reservationId ?? null,
-          persisted.upstreamStatus ?? null,
+          persisted.verdict,
+          [...persisted.reasonCodes],
+          persisted.policyVersion,
+          persisted.evaluationLatencyMicros,
+          persisted.reservationId,
+          persisted.upstreamStatus,
           persisted.requestDigest,
           eventDigest,
           AUDIT_CHAIN_VERSION,
@@ -203,7 +203,7 @@ export class PostgresAuditLedger implements AuditSink {
           chainDigest,
           integritySignature,
           signingKey.keyId,
-          null,
+          JSON.stringify(persisted.metadata),
         ],
       );
 
@@ -448,14 +448,14 @@ interface PersistedAuditEvent {
   readonly organizationId: string;
   readonly userId: string;
   readonly agentId: string;
-  readonly mandateId: string;
+  readonly mandateId: string | null;
   readonly timestamp: string;
-  readonly protocol: "ACP";
+  readonly protocol: string;
   readonly operation: string;
   readonly merchantDomain: string;
-  readonly merchantVendorId?: string;
+  readonly merchantVendorId: string | null;
   readonly requestedPayload: unknown;
-  readonly approvedPayload?: unknown;
+  readonly approvedPayload: unknown | null;
   readonly decisionSnapshot: {
     readonly decisionId: string;
     readonly requestId: string;
@@ -472,12 +472,18 @@ interface PersistedAuditEvent {
     readonly evaluationLatencyMicros: number;
     readonly evaluatedAt: string;
   };
+  readonly verdict: string;
+  readonly reasonCodes: readonly string[];
+  readonly policyVersion: number | null;
+  readonly evaluationLatencyMicros: number;
   readonly requestDigest: string;
-  readonly reservationId?: string;
-  readonly upstreamStatus?: number;
+  readonly reservationId: string | null;
+  readonly upstreamStatus: number | null;
+  readonly metadata: unknown | null;
 }
 
 function persistedEvent(event: GatewayAuditEvent): PersistedAuditEvent {
+  const decisionSnapshot = jsonValue(event.decision) as PersistedAuditEvent["decisionSnapshot"];
   return {
     requestId: event.requestId,
     decisionId: event.decisionId,
@@ -489,15 +495,21 @@ function persistedEvent(event: GatewayAuditEvent): PersistedAuditEvent {
     protocol: event.protocol,
     operation: event.operation,
     merchantDomain: event.merchantDomain,
-    ...(event.merchantVendorId ? { merchantVendorId: event.merchantVendorId } : {}),
+    merchantVendorId: event.merchantVendorId ?? null,
     requestedPayload: jsonValue(redactSensitivePayload(event.requestedPayload)),
-    ...(event.approvedPayload !== undefined
-      ? { approvedPayload: jsonValue(redactSensitivePayload(event.approvedPayload)) }
-      : {}),
-    decisionSnapshot: jsonValue(event.decision) as PersistedAuditEvent["decisionSnapshot"],
+    approvedPayload:
+      event.approvedPayload === undefined
+        ? null
+        : jsonValue(redactSensitivePayload(event.approvedPayload)),
+    decisionSnapshot,
+    verdict: decisionSnapshot.verdict,
+    reasonCodes: [...decisionSnapshot.reasons],
+    policyVersion: decisionSnapshot.policyVersion,
+    evaluationLatencyMicros: decisionSnapshot.evaluationLatencyMicros,
     requestDigest: event.requestDigest,
-    ...(event.reservationId ? { reservationId: event.reservationId } : {}),
-    ...(event.upstreamStatus !== undefined ? { upstreamStatus: event.upstreamStatus } : {}),
+    reservationId: event.reservationId ?? null,
+    upstreamStatus: event.upstreamStatus ?? null,
+    metadata: null,
   };
 }
 
@@ -508,18 +520,23 @@ function persistedEventFromRow(row: AuditLogRow): PersistedAuditEvent {
     organizationId: row.organizationId,
     userId: row.userId,
     agentId: row.agentId,
-    mandateId: row.mandateId ?? "",
+    mandateId: row.mandateId,
     timestamp: row.timestamp.toISOString(),
-    protocol: "ACP",
+    protocol: row.protocol,
     operation: row.operation,
     merchantDomain: row.merchantDomain,
-    ...(row.merchantVendorId ? { merchantVendorId: row.merchantVendorId } : {}),
+    merchantVendorId: row.merchantVendorId,
     requestedPayload: row.requestedPayload,
-    ...(row.approvedPayload !== null ? { approvedPayload: row.approvedPayload } : {}),
+    approvedPayload: row.approvedPayload,
     decisionSnapshot: row.decisionSnapshot as PersistedAuditEvent["decisionSnapshot"],
+    verdict: row.verdict,
+    reasonCodes: row.reasonCodes,
+    policyVersion: row.policyVersion,
+    evaluationLatencyMicros: row.evaluationLatencyMicros,
     requestDigest: row.requestDigest,
-    ...(row.reservationId ? { reservationId: row.reservationId } : {}),
-    ...(row.upstreamStatus !== null ? { upstreamStatus: row.upstreamStatus } : {}),
+    reservationId: row.reservationId,
+    upstreamStatus: row.upstreamStatus,
+    metadata: row.metadata,
   };
 }
 
