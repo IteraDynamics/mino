@@ -5,10 +5,19 @@ import { ApprovalMode, type AgentSpendMandate, type MandateTokenClaims } from ".
 import { DecisionVerdict } from "../../src/domain/evaluation/evaluation.types.js";
 import { sha256Hex } from "../../src/infrastructure/crypto/canonical-json.js";
 import { MandateTokenService } from "../../src/modules/mandates/mandate-token.service.js";
+import {
+  BeginPaymentOutcomeKind,
+  PaymentOutcomeStatus,
+  type BeginPaymentOutcomeInput,
+  type PaymentOutcomeRecord,
+  type PaymentOutcomeStore,
+  type StoredMerchantResponse,
+} from "../../src/modules/payments/payment-outcome.store.js";
 import { PolicyEvaluator } from "../../src/modules/policy/policy-evaluator.js";
 import { ACPAdapter } from "../../src/modules/proxy/acp-adapter.js";
 import {
   CheckoutProxyService,
+  PaymentOutcomePendingError,
   type CompleteCheckoutProxyInput,
 } from "../../src/modules/proxy/checkout-proxy.service.js";
 import type { ACPMerchantClient, MerchantEndpoint } from "../../src/modules/proxy/merchant-client.js";
@@ -55,6 +64,114 @@ function checkoutSession(total = 5_000, category = "OFFICE_SUPPLIES") {
   };
 }
 
+class MemoryPaymentOutcomeStore implements PaymentOutcomeStore {
+  private readonly records = new Map<string, PaymentOutcomeRecord>();
+
+  public async getByIdempotency(
+    organizationId: string,
+    idempotencyKey: string,
+  ): Promise<PaymentOutcomeRecord | undefined> {
+    return this.records.get(this.key(organizationId, idempotencyKey));
+  }
+
+  public async begin(input: BeginPaymentOutcomeInput) {
+    const key = this.key(input.organizationId, input.idempotencyKey);
+    const existing = this.records.get(key);
+    if (existing) {
+      return {
+        kind:
+          existing.requestDigest === input.requestDigest
+            ? BeginPaymentOutcomeKind.EXISTING
+            : BeginPaymentOutcomeKind.CONFLICT,
+        outcome: existing,
+      };
+    }
+
+    const outcome: PaymentOutcomeRecord = {
+      id: input.id,
+      organizationId: input.organizationId,
+      userId: input.userId,
+      agentId: input.agentId,
+      mandateId: input.mandateId,
+      reservationId: input.reservationId,
+      idempotencyKey: input.idempotencyKey,
+      requestDigest: input.requestDigest,
+      merchantId: input.merchantId,
+      merchantDomain: input.merchantDomain,
+      checkoutSessionId: input.checkoutSessionId,
+      amountMinor: input.amountMinor,
+      currency: input.currency,
+      status: PaymentOutcomeStatus.FORWARDING,
+      createdAt: input.now,
+      updatedAt: input.now,
+      forwardedAt: input.now,
+    };
+    this.records.set(key, outcome);
+    return { kind: BeginPaymentOutcomeKind.CREATED, outcome };
+  }
+
+  public async markUnknown(
+    outcomeId: string,
+    args: { readonly upstreamStatus?: number; readonly errorCode?: string; readonly now: Date },
+  ) {
+    return this.update(outcomeId, (outcome) => ({
+      ...outcome,
+      status: PaymentOutcomeStatus.UNKNOWN,
+      ...(args.upstreamStatus !== undefined ? { upstreamStatus: args.upstreamStatus } : {}),
+      ...(args.errorCode ? { lastErrorCode: args.errorCode } : {}),
+      updatedAt: args.now,
+    }));
+  }
+
+  public async markSucceeded(outcomeId: string, response: StoredMerchantResponse, at: Date) {
+    return this.update(outcomeId, (outcome) => ({
+      ...outcome,
+      status: PaymentOutcomeStatus.SUCCEEDED,
+      upstreamStatus: response.status,
+      response,
+      updatedAt: at,
+      resolvedAt: outcome.resolvedAt ?? at,
+    }));
+  }
+
+  public async markDefinitiveFailure(outcomeId: string, response: StoredMerchantResponse, at: Date) {
+    return this.update(outcomeId, (outcome) => ({
+      ...outcome,
+      status: PaymentOutcomeStatus.FAILED_DEFINITIVE,
+      upstreamStatus: response.status,
+      response,
+      updatedAt: at,
+      resolvedAt: outcome.resolvedAt ?? at,
+    }));
+  }
+
+  public async markReconciled(outcomeId: string, at: Date) {
+    return this.update(outcomeId, (outcome) => ({
+      ...outcome,
+      updatedAt: at,
+      lastReconciledAt: at,
+    }));
+  }
+
+  private update(
+    outcomeId: string,
+    mutate: (outcome: PaymentOutcomeRecord) => PaymentOutcomeRecord,
+  ): PaymentOutcomeRecord {
+    for (const [key, value] of this.records.entries()) {
+      if (value.id === outcomeId) {
+        const updated = mutate(value);
+        this.records.set(key, updated);
+        return updated;
+      }
+    }
+    throw new Error(`Unknown memory payment outcome ${outcomeId}`);
+  }
+
+  private key(organizationId: string, idempotencyKey: string): string {
+    return `${organizationId}|${idempotencyKey}`;
+  }
+}
+
 integration("CheckoutProxyService with real Redis reservation state", () => {
   const minoKeys = generateKeyPairSync("ed25519");
   let redis: ReturnType<typeof createClient>;
@@ -85,6 +202,7 @@ integration("CheckoutProxyService with real Redis reservation state", () => {
     mandate?: AgentSpendMandate;
     completeStatus?: number;
     throwOnComplete?: boolean;
+    completeThenThrow?: boolean;
   } = {}) {
     const jti = `proxy-integration-jti-${generateId()}`;
     const base: AgentSpendMandate = args.mandate ?? {
@@ -152,6 +270,7 @@ integration("CheckoutProxyService with real Redis reservation state", () => {
     let approvalEvents = 0;
     const audits: unknown[] = [];
     let delegationObserved = false;
+    const paymentOutcomes = new MemoryPaymentOutcomeStore();
 
     const merchantClient: ACPMerchantClient = {
       async createCheckout() {
@@ -163,15 +282,28 @@ integration("CheckoutProxyService with real Redis reservation state", () => {
       async completeCheckout(_merchant, _id, _payload, headers) {
         completeCalls += 1;
         delegationObserved = typeof headers.delegationAssertion === "string";
+        if (args.completeThenThrow) {
+          authoritativeSession = {
+            ...authoritativeSession,
+            status: "completed",
+            order: { id: "order-after-lost-response" },
+          };
+          throw new Error("simulated response loss after merchant completed payment");
+        }
         if (args.throwOnComplete) {
           throw new Error("simulated transport failure after dispatch");
         }
-        return {
-          status: args.completeStatus ?? 200,
-          body: {
+        const status = args.completeStatus ?? 200;
+        if (status >= 200 && status < 300) {
+          authoritativeSession = {
             ...authoritativeSession,
-            status: (args.completeStatus ?? 200) < 300 ? "completed" : "ready_for_payment",
-          },
+            status: "completed",
+            order: { id: "order-success" },
+          };
+        }
+        return {
+          status,
+          body: authoritativeSession,
         };
       },
       async cancelCheckout() {
@@ -206,6 +338,7 @@ integration("CheckoutProxyService with real Redis reservation state", () => {
         monotonicMicros: () => ++monotonic,
       }),
       reservations: new AuthorizationReservationService(redisAdapter(redis)),
+      paymentOutcomes,
       delegationAssertions: {
         issue() {
           return "integration-delegation-assertion";
@@ -252,6 +385,7 @@ integration("CheckoutProxyService with real Redis reservation state", () => {
       proxy,
       input,
       mandate,
+      paymentOutcomes,
       setAuthoritativeSession(value: ReturnType<typeof checkoutSession>) {
         authoritativeSession = value;
       },
@@ -263,15 +397,12 @@ integration("CheckoutProxyService with real Redis reservation state", () => {
 
   it("ignores an agent's stale cart expectation and blocks the merchant's current restricted cart", async () => {
     const h = buildHarness();
-
-    // The agent may believe the cart is still a $75 office purchase.
     const agentBody = {
       payment_data: { token: "opaque" },
       agent_expected_total_minor: 7_500,
       agent_expected_category: "OFFICE_SUPPLIES",
     };
 
-    // The merchant's authoritative state has changed before payment.
     h.setAuthoritativeSession(checkoutSession(37_500, "DIGITAL_GIFT_CARD"));
 
     const result = await h.proxy.completeCheckout(h.input(agentBody));
@@ -290,22 +421,50 @@ integration("CheckoutProxyService with real Redis reservation state", () => {
 
     expect(result.decision.verdict).toBe(DecisionVerdict.ALLOW);
     expect(result.upstream?.status).toBe(200);
+    expect(result.paymentOutcomeId).toBeDefined();
     expect(h.state().completeCalls).toBe(1);
     expect(h.state().delegationObserved).toBe(true);
     expect(await redis.zCard(`mino:v1:auth:{${h.mandate.id}}:reservations`)).toBe(0);
     expect(await redis.zCard(`mino:v1:auth:{${h.mandate.id}}:committed`)).toBe(1);
   });
 
-  it("releases real Redis allowance when the merchant returns a definite non-2xx response", async () => {
-    const h = buildHarness({ session: checkoutSession(5_000), completeStatus: 503 });
+  it("replays a completed idempotent payment without forwarding a second charge", async () => {
+    const h = buildHarness({ session: checkoutSession(5_000) });
+    const key = "idem-success-replay";
+    const body = { payment_data: { token: "opaque" } };
+
+    const first = await h.proxy.completeCheckout(h.input(body, key));
+    const second = await h.proxy.completeCheckout(h.input(body, key));
+
+    expect(first.upstream?.status).toBe(200);
+    expect(second.upstream?.status).toBe(200);
+    expect(second.replayed).toBe(true);
+    expect(h.state().completeCalls).toBe(1);
+    expect(await redis.zCard(`mino:v1:auth:{${h.mandate.id}}:committed`)).toBe(1);
+  });
+
+  it("releases real Redis allowance for a definitive merchant 4xx failure", async () => {
+    const h = buildHarness({ session: checkoutSession(5_000), completeStatus: 400 });
     const result = await h.proxy.completeCheckout(
       h.input({ payment_data: { token: "opaque" } }),
     );
 
     expect(result.decision.verdict).toBe(DecisionVerdict.ALLOW);
-    expect(result.upstream?.status).toBe(503);
+    expect(result.upstream?.status).toBe(400);
     expect(h.state().completeCalls).toBe(1);
     expect(await redis.zCard(`mino:v1:auth:{${h.mandate.id}}:reservations`)).toBe(0);
+    expect(await redis.zCard(`mino:v1:auth:{${h.mandate.id}}:committed`)).toBe(0);
+  });
+
+  it("keeps allowance held when a merchant 5xx leaves payment outcome ambiguous", async () => {
+    const h = buildHarness({ session: checkoutSession(5_000), completeStatus: 503 });
+
+    await expect(
+      h.proxy.completeCheckout(h.input({ payment_data: { token: "opaque" } })),
+    ).rejects.toBeInstanceOf(PaymentOutcomePendingError);
+
+    expect(h.state().completeCalls).toBe(1);
+    expect(await redis.zCard(`mino:v1:auth:{${h.mandate.id}}:reservations`)).toBe(1);
     expect(await redis.zCard(`mino:v1:auth:{${h.mandate.id}}:committed`)).toBe(0);
   });
 
@@ -331,7 +490,29 @@ integration("CheckoutProxyService with real Redis reservation state", () => {
     expect(await redis.zCard(`mino:v1:auth:{${h.mandate.id}}:reservations`)).toBe(0);
   });
 
-  it.todo(
-    "reconciles an ambiguous merchant outcome where payment may have succeeded but the response was lost",
-  );
+  it("reconciles a lost merchant response without forwarding a second payment", async () => {
+    const h = buildHarness({ session: checkoutSession(5_000), completeThenThrow: true });
+    const key = "idem-lost-response";
+    const body = { payment_data: { token: "opaque" } };
+
+    await expect(h.proxy.completeCheckout(h.input(body, key))).rejects.toBeInstanceOf(
+      PaymentOutcomePendingError,
+    );
+
+    expect(h.state().completeCalls).toBe(1);
+    expect(await redis.zCard(`mino:v1:auth:{${h.mandate.id}}:reservations`)).toBe(1);
+    expect(await redis.zCard(`mino:v1:auth:{${h.mandate.id}}:committed`)).toBe(0);
+
+    const reconciled = await h.proxy.completeCheckout(h.input(body, key));
+
+    expect(reconciled.upstream?.status).toBe(200);
+    expect(reconciled.replayed).toBe(true);
+    expect(h.state().completeCalls).toBe(1);
+    expect(await redis.zCard(`mino:v1:auth:{${h.mandate.id}}:reservations`)).toBe(0);
+    expect(await redis.zCard(`mino:v1:auth:{${h.mandate.id}}:committed`)).toBe(1);
+
+    const outcome = await h.paymentOutcomes.getByIdempotency(h.mandate.organizationId, key);
+    expect(outcome?.status).toBe(PaymentOutcomeStatus.SUCCEEDED);
+    expect(outcome?.lastReconciledAt).toEqual(now);
+  });
 });
