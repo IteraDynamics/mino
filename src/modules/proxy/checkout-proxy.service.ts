@@ -547,7 +547,7 @@ export class CheckoutProxyService {
 
   private async resolvePendingApproval(args: {
     readonly decision: PolicyDecision;
-    readonly existingApproval?: ApprovalRequestRecord;
+    readonly existingApproval?: ApprovalRequestRecord | undefined;
     readonly mandate: AgentSpendMandate;
     readonly merchant: MerchantEndpoint;
     readonly input: CompleteCheckoutProxyInput;
