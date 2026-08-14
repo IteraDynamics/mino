@@ -51,6 +51,11 @@ export interface AuthorizationReservations {
   tryReserve(input: ReservationAttemptInput): Promise<ReservationAttemptResult>;
   commit(mandateId: string, reservationId: string, now: Date): Promise<boolean>;
   release(mandateId: string, reservationId: string): Promise<boolean>;
+  releaseForApproval(
+    mandateId: string,
+    reservationId: string,
+    idempotencyKey: string,
+  ): Promise<boolean>;
   holdForReconciliation(mandateId: string, reservationId: string, now: Date): Promise<boolean>;
 }
 
@@ -133,6 +138,22 @@ export class AuthorizationReservationService implements AuthorizationReservation
       keys: [
         `${this.baseKey(mandateId)}:reservations`,
         `${this.baseKey(mandateId)}:reservation:${reservationId}`,
+      ],
+      arguments: [String(this.idempotencyTtlMs)],
+    });
+    return response === 1 || response === "1";
+  }
+
+  public async releaseForApproval(
+    mandateId: string,
+    reservationId: string,
+    idempotencyKey: string,
+  ): Promise<boolean> {
+    const response = await this.redis.eval(RELEASE_FOR_APPROVAL_SCRIPT, {
+      keys: [
+        `${this.baseKey(mandateId)}:reservations`,
+        `${this.baseKey(mandateId)}:reservation:${reservationId}`,
+        `${this.baseKey(mandateId)}:idem:${encodeURIComponent(idempotencyKey)}`,
       ],
       arguments: [String(this.idempotencyTtlMs)],
     });
@@ -432,6 +453,28 @@ end
 redis.call('ZREM', KEYS[1], detail.reservation_member)
 detail.status = 'RELEASED'
 redis.call('SET', KEYS[2], cjson.encode(detail), 'PX', tonumber(ARGV[1]))
+return 1
+`;
+
+export const RELEASE_FOR_APPROVAL_SCRIPT = String.raw`
+local detail_raw = redis.call('GET', KEYS[2])
+if not detail_raw then
+  redis.call('DEL', KEYS[3])
+  return 0
+end
+local detail = cjson.decode(detail_raw)
+if detail.status == 'COMMITTED' then
+  return 0
+end
+if detail.status == 'RESERVED' then
+  redis.call('ZREM', KEYS[1], detail.reservation_member)
+  detail.status = 'RELEASED'
+  detail.released_for_approval = true
+  redis.call('SET', KEYS[2], cjson.encode(detail), 'PX', tonumber(ARGV[1]))
+elseif detail.status ~= 'RELEASED' then
+  return 0
+end
+redis.call('DEL', KEYS[3])
 return 1
 `;
 
