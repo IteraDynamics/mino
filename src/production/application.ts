@@ -20,6 +20,7 @@ import {
 } from "../modules/audit/postgres-audit-ledger.js";
 import { MandateTokenService } from "../modules/mandates/mandate-token.service.js";
 import { BackgroundPaymentReconciler } from "../modules/payments/background-payment-reconciler.js";
+import { PaymentReconciliationMonitor } from "../modules/payments/payment-reconciliation-monitor.js";
 import { PostgresPaymentOutcomeStore } from "../modules/payments/payment-outcome.store.js";
 import { PolicyEvaluator } from "../modules/policy/policy-evaluator.js";
 import { ACPAdapter } from "../modules/proxy/acp-adapter.js";
@@ -58,6 +59,7 @@ export interface ProductionApplicationOverrides {
 export interface ProductionApplication {
   readonly app: Awaited<ReturnType<typeof createApp>>;
   readonly reconciler: BackgroundPaymentReconciler;
+  readonly reconciliationMonitor: PaymentReconciliationMonitor;
   readonly approvalNotifications: ApprovalNotificationOutboxWorker;
   readonly auditVerifier: PostgresAuditVerifier;
   readonly repositories: {
@@ -115,8 +117,6 @@ export async function createProductionApplication(
     );
     const paymentOutcomes = new PostgresPaymentOutcomeStore(sql);
 
-    // The ApprovalRequest row itself is the durable outbox signal. The request path never
-    // performs the external webhook call; a separate worker claims and delivers it later.
     const approvals = new DurableHumanApprovalService(
       new PostgresApprovalRequestStore(sql),
       new NoopHumanApprovalEmitter(),
@@ -196,11 +196,13 @@ export async function createProductionApplication(
       credentials: new StaticMerchantCredentialProvider(config.merchantCredentials),
       generateRequestId: generateId,
     });
+    const reconciliationMonitor = new PaymentReconciliationMonitor(sql);
 
     let closed = false;
     return {
       app,
       reconciler,
+      reconciliationMonitor,
       approvalNotifications,
       auditVerifier,
       repositories: { mandates, merchants, policies, agentKeys },
