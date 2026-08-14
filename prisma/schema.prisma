@@ -65,14 +65,14 @@ model Organization {
   createdAt DateTime @default(now()) @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @db.Timestamptz(6)
 
-  users        User[]
-  agents       AgentIdentity[]
-  policies     Policy[]
-  mandates     AgentMandate[]
-  auditLogs    AuditLog[]
-  approvals    ApprovalRequest[]
-  reservations SpendReservation[]
-  merchants    MerchantEndpoint[]
+  users           User[]
+  agents          AgentIdentity[]
+  policies        Policy[]
+  mandates        AgentMandate[]
+  auditLogs       AuditLog[]
+  approvals       ApprovalRequest[]
+  reservations    SpendReservation[]
+  merchants       MerchantEndpoint[]
   paymentOutcomes PaymentOutcome[]
 }
 
@@ -101,11 +101,11 @@ model User {
   createdAt      DateTime   @default(now()) @db.Timestamptz(6)
   updatedAt      DateTime   @updatedAt @db.Timestamptz(6)
 
-  organization Organization @relation(fields: [organizationId], references: [id])
-  mandates     AgentMandate[]
-  auditLogs    AuditLog[]
-  approvals    ApprovalRequest[]
-  reservations SpendReservation[]
+  organization  Organization @relation(fields: [organizationId], references: [id])
+  mandates      AgentMandate[]
+  auditLogs     AuditLog[]
+  approvals     ApprovalRequest[]
+  reservations  SpendReservation[]
   paymentOutcomes PaymentOutcome[]
 
   @@unique([organizationId, email])
@@ -123,10 +123,10 @@ model AgentIdentity {
   createdAt       DateTime    @default(now()) @db.Timestamptz(6)
   updatedAt       DateTime    @updatedAt @db.Timestamptz(6)
 
-  organization Organization @relation(fields: [organizationId], references: [id])
-  mandates     AgentMandate[]
-  auditLogs    AuditLog[]
-  reservations SpendReservation[]
+  organization    Organization @relation(fields: [organizationId], references: [id])
+  mandates        AgentMandate[]
+  auditLogs       AuditLog[]
+  reservations    SpendReservation[]
   paymentOutcomes PaymentOutcome[]
 
   @@unique([organizationId, externalAgentId])
@@ -195,13 +195,13 @@ model AgentMandate {
   revokedAt DateTime?     @db.Timestamptz(6)
   metadata  Json?
 
-  organization Organization  @relation(fields: [organizationId], references: [id])
-  user         User          @relation(fields: [userId], references: [id])
-  agent        AgentIdentity @relation(fields: [agentId], references: [id])
-  policy       Policy        @relation(fields: [policyId], references: [id])
-  auditLogs    AuditLog[]
-  approvals    ApprovalRequest[]
-  reservations SpendReservation[]
+  organization    Organization  @relation(fields: [organizationId], references: [id])
+  user            User          @relation(fields: [userId], references: [id])
+  agent           AgentIdentity @relation(fields: [agentId], references: [id])
+  policy          Policy        @relation(fields: [policyId], references: [id])
+  auditLogs       AuditLog[]
+  approvals       ApprovalRequest[]
+  reservations    SpendReservation[]
   paymentOutcomes PaymentOutcome[]
 
   @@index([organizationId, agentId, status, expiresAt])
@@ -244,26 +244,30 @@ model PaymentOutcome {
   agentId        String @db.Uuid
   mandateId      String @db.Uuid
 
-  reservationId    String @unique
-  idempotencyKey   String
-  requestDigest    String
-  merchantId       String
-  merchantDomain   String
+  reservationId     String @unique
+  idempotencyKey    String
+  requestDigest     String
+  merchantId        String
+  merchantDomain    String
   checkoutSessionId String
-  amountMinor      BigInt @db.BigInt
-  currency         String @db.Char(3)
-  status           PaymentOutcomeStatus @default(FORWARDING)
+  amountMinor       BigInt @db.BigInt
+  currency          String @db.Char(3)
+  status            PaymentOutcomeStatus @default(FORWARDING)
 
-  upstreamStatus   Int?
-  responseBody     Json?
-  responseHeaders  Json?
-  lastErrorCode    String?
+  upstreamStatus  Int?
+  responseBody    Json?
+  responseHeaders Json?
+  lastErrorCode   String?
 
-  forwardedAt      DateTime? @db.Timestamptz(6)
-  resolvedAt       DateTime? @db.Timestamptz(6)
-  lastReconciledAt DateTime? @db.Timestamptz(6)
-  createdAt        DateTime  @default(now()) @db.Timestamptz(6)
-  updatedAt        DateTime  @updatedAt @db.Timestamptz(6)
+  forwardedAt                DateTime? @db.Timestamptz(6)
+  resolvedAt                 DateTime? @db.Timestamptz(6)
+  lastReconciledAt           DateTime? @db.Timestamptz(6)
+  reconcileAttempts          Int       @default(0)
+  nextReconcileAt            DateTime? @db.Timestamptz(6)
+  reconciliationLeaseOwner   String?
+  reconciliationLeaseExpiresAt DateTime? @db.Timestamptz(6)
+  createdAt                  DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt                  DateTime  @updatedAt @db.Timestamptz(6)
 
   organization Organization  @relation(fields: [organizationId], references: [id])
   user         User          @relation(fields: [userId], references: [id])
@@ -274,6 +278,7 @@ model PaymentOutcome {
   @@index([organizationId, status, updatedAt])
   @@index([mandateId, status, updatedAt])
   @@index([checkoutSessionId, status])
+  @@index([status, nextReconcileAt, reconciliationLeaseExpiresAt])
 }
 
 model ApprovalRequest {
@@ -283,13 +288,13 @@ model ApprovalRequest {
   mandateId      String @db.Uuid
   decisionId     String @unique
 
-  requestedPayload Json
-  amountMinor      BigInt @db.BigInt
-  currency         String @db.Char(3)
-  merchantDomain   String
-  checkoutSessionId String?
-  sessionSnapshot   Json?
-  status           ApprovalStatus @default(PENDING)
+  requestedPayload   Json
+  amountMinor        BigInt @db.BigInt
+  currency           String @db.Char(3)
+  merchantDomain     String
+  checkoutSessionId  String?
+  sessionSnapshot    Json?
+  status             ApprovalStatus @default(PENDING)
   requiredSignatures Int @default(2)
   approvalData       Json?
 
@@ -321,9 +326,9 @@ model AuditLog {
   merchantVendorId String?
   requestedPayload Json
   approvedPayload  Json?
-  verdict           DecisionVerdict
-  reasonCodes       String[]
-  policyVersion     Int?
+  verdict          DecisionVerdict
+  reasonCodes      String[]
+  policyVersion    Int?
   evaluationLatencyMicros Int
 
   requestDigest       String
