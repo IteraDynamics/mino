@@ -52,6 +52,13 @@ enum SpendReservationStatus {
   EXPIRED
 }
 
+enum PaymentOutcomeStatus {
+  FORWARDING
+  UNKNOWN
+  SUCCEEDED
+  FAILED_DEFINITIVE
+}
+
 model Organization {
   id        String   @id @default(uuid()) @db.Uuid
   name      String
@@ -65,7 +72,8 @@ model Organization {
   auditLogs    AuditLog[]
   approvals    ApprovalRequest[]
   reservations SpendReservation[]
-  merchants     MerchantEndpoint[]
+  merchants    MerchantEndpoint[]
+  paymentOutcomes PaymentOutcome[]
 }
 
 model MerchantEndpoint {
@@ -98,6 +106,7 @@ model User {
   auditLogs    AuditLog[]
   approvals    ApprovalRequest[]
   reservations SpendReservation[]
+  paymentOutcomes PaymentOutcome[]
 
   @@unique([organizationId, email])
   @@index([organizationId, status])
@@ -118,6 +127,7 @@ model AgentIdentity {
   mandates     AgentMandate[]
   auditLogs    AuditLog[]
   reservations SpendReservation[]
+  paymentOutcomes PaymentOutcome[]
 
   @@unique([organizationId, externalAgentId])
   @@index([organizationId, status])
@@ -192,6 +202,7 @@ model AgentMandate {
   auditLogs    AuditLog[]
   approvals    ApprovalRequest[]
   reservations SpendReservation[]
+  paymentOutcomes PaymentOutcome[]
 
   @@index([organizationId, agentId, status, expiresAt])
   @@index([userId, status])
@@ -224,6 +235,45 @@ model SpendReservation {
   @@unique([organizationId, idempotencyKey])
   @@index([mandateId, status, reservedAt])
   @@index([userId, reservedAt])
+}
+
+model PaymentOutcome {
+  id             String @id @default(uuid()) @db.Uuid
+  organizationId String @db.Uuid
+  userId         String @db.Uuid
+  agentId        String @db.Uuid
+  mandateId      String @db.Uuid
+
+  reservationId    String @unique
+  idempotencyKey   String
+  requestDigest    String
+  merchantId       String
+  merchantDomain   String
+  checkoutSessionId String
+  amountMinor      BigInt @db.BigInt
+  currency         String @db.Char(3)
+  status           PaymentOutcomeStatus @default(FORWARDING)
+
+  upstreamStatus   Int?
+  responseBody     Json?
+  responseHeaders  Json?
+  lastErrorCode    String?
+
+  forwardedAt      DateTime? @db.Timestamptz(6)
+  resolvedAt       DateTime? @db.Timestamptz(6)
+  lastReconciledAt DateTime? @db.Timestamptz(6)
+  createdAt        DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt        DateTime  @updatedAt @db.Timestamptz(6)
+
+  organization Organization  @relation(fields: [organizationId], references: [id])
+  user         User          @relation(fields: [userId], references: [id])
+  agent        AgentIdentity @relation(fields: [agentId], references: [id])
+  mandate      AgentMandate  @relation(fields: [mandateId], references: [id])
+
+  @@unique([organizationId, idempotencyKey])
+  @@index([organizationId, status, updatedAt])
+  @@index([mandateId, status, updatedAt])
+  @@index([checkoutSessionId, status])
 }
 
 model ApprovalRequest {
