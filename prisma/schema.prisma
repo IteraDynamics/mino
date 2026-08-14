@@ -45,6 +45,11 @@ enum ApprovalStatus {
   EXPIRED
 }
 
+enum ApprovalVoteDecision {
+  APPROVE
+  REJECT
+}
+
 enum SpendReservationStatus {
   RESERVED
   COMMITTED
@@ -101,11 +106,11 @@ model User {
   createdAt      DateTime   @default(now()) @db.Timestamptz(6)
   updatedAt      DateTime   @updatedAt @db.Timestamptz(6)
 
-  organization  Organization @relation(fields: [organizationId], references: [id])
-  mandates      AgentMandate[]
-  auditLogs     AuditLog[]
-  approvals     ApprovalRequest[]
-  reservations  SpendReservation[]
+  organization    Organization @relation(fields: [organizationId], references: [id])
+  mandates        AgentMandate[]
+  auditLogs       AuditLog[]
+  approvals       ApprovalRequest[]
+  reservations    SpendReservation[]
   paymentOutcomes PaymentOutcome[]
 
   @@unique([organizationId, email])
@@ -126,6 +131,7 @@ model AgentIdentity {
   organization    Organization @relation(fields: [organizationId], references: [id])
   mandates        AgentMandate[]
   auditLogs       AuditLog[]
+  approvals       ApprovalRequest[]
   reservations    SpendReservation[]
   paymentOutcomes PaymentOutcome[]
 
@@ -259,15 +265,15 @@ model PaymentOutcome {
   responseHeaders Json?
   lastErrorCode   String?
 
-  forwardedAt                DateTime? @db.Timestamptz(6)
-  resolvedAt                 DateTime? @db.Timestamptz(6)
-  lastReconciledAt           DateTime? @db.Timestamptz(6)
-  reconcileAttempts          Int       @default(0)
-  nextReconcileAt            DateTime? @db.Timestamptz(6)
-  reconciliationLeaseOwner   String?
+  forwardedAt                  DateTime? @db.Timestamptz(6)
+  resolvedAt                   DateTime? @db.Timestamptz(6)
+  lastReconciledAt             DateTime? @db.Timestamptz(6)
+  reconcileAttempts            Int       @default(0)
+  nextReconcileAt              DateTime? @db.Timestamptz(6)
+  reconciliationLeaseOwner     String?
   reconciliationLeaseExpiresAt DateTime? @db.Timestamptz(6)
-  createdAt                  DateTime  @default(now()) @db.Timestamptz(6)
-  updatedAt                  DateTime  @updatedAt @db.Timestamptz(6)
+  createdAt                    DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt                    DateTime  @updatedAt @db.Timestamptz(6)
 
   organization Organization  @relation(fields: [organizationId], references: [id])
   user         User          @relation(fields: [userId], references: [id])
@@ -285,29 +291,59 @@ model ApprovalRequest {
   id             String @id @default(uuid()) @db.Uuid
   organizationId String @db.Uuid
   userId         String @db.Uuid
+  agentId        String @db.Uuid
   mandateId      String @db.Uuid
-  decisionId     String @unique
 
-  requestedPayload   Json
-  amountMinor        BigInt @db.BigInt
-  currency           String @db.Char(3)
-  merchantDomain     String
-  checkoutSessionId  String?
-  sessionSnapshot    Json?
+  decisionId     String @unique
+  requestId      String
+  idempotencyKey String
+  requestDigest  String
+  policyVersion  Int
+
+  merchantId        String
+  merchantDomain    String
+  checkoutSessionId String?
+
+  requestedPayload Json
+  sessionSnapshot  Json?
+  spendSnapshot    Json?
+  reasonCodes      String[]
+  amountMinor      BigInt @db.BigInt
+  currency         String @db.Char(3)
+
   status             ApprovalStatus @default(PENDING)
-  requiredSignatures Int @default(2)
+  requiredSignatures Int            @default(2)
   approvalData       Json?
 
   createdAt  DateTime  @default(now()) @db.Timestamptz(6)
   expiresAt  DateTime  @db.Timestamptz(6)
   resolvedAt DateTime? @db.Timestamptz(6)
 
-  organization Organization @relation(fields: [organizationId], references: [id])
-  user         User         @relation(fields: [userId], references: [id])
-  mandate      AgentMandate @relation(fields: [mandateId], references: [id])
+  organization Organization   @relation(fields: [organizationId], references: [id])
+  user         User           @relation(fields: [userId], references: [id])
+  agent        AgentIdentity  @relation(fields: [agentId], references: [id])
+  mandate      AgentMandate   @relation(fields: [mandateId], references: [id])
+  votes        ApprovalVote[]
 
+  @@unique([organizationId, idempotencyKey])
   @@index([organizationId, status, createdAt])
   @@index([mandateId, status])
+  @@index([expiresAt, status])
+}
+
+model ApprovalVote {
+  id                String               @id @default(uuid()) @db.Uuid
+  approvalRequestId String               @db.Uuid
+  approverId        String
+  decision          ApprovalVoteDecision
+  comment           String?
+  metadata          Json?
+  createdAt         DateTime             @default(now()) @db.Timestamptz(6)
+
+  approvalRequest ApprovalRequest @relation(fields: [approvalRequestId], references: [id], onDelete: Cascade)
+
+  @@unique([approvalRequestId, approverId])
+  @@index([approvalRequestId, decision, createdAt])
 }
 
 model AuditLog {
@@ -320,16 +356,16 @@ model AuditLog {
   mandateId      String? @db.Uuid
   timestamp      DateTime @default(now()) @db.Timestamptz(6)
 
-  protocol         String
-  operation        String
-  merchantDomain   String
-  merchantVendorId String?
-  requestedPayload Json
-  approvedPayload  Json?
-  verdict          DecisionVerdict
-  reasonCodes      String[]
-  policyVersion    Int?
-  evaluationLatencyMicros Int
+  protocol                  String
+  operation                 String
+  merchantDomain            String
+  merchantVendorId          String?
+  requestedPayload          Json
+  approvedPayload           Json?
+  verdict                   DecisionVerdict
+  reasonCodes               String[]
+  policyVersion             Int?
+  evaluationLatencyMicros   Int
 
   requestDigest       String
   eventDigest         String
