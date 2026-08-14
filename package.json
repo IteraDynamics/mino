@@ -9,6 +9,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "start": "node dist/src/server.js",
     "test": "npm run test:unit",
     "test:watch": "vitest",
     "typecheck": "tsc -p tsconfig.json --noEmit",
