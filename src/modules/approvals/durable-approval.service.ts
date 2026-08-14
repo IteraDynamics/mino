@@ -230,8 +230,9 @@ export function grantApprovedDecision(decision: PolicyDecision): PolicyDecision 
   if (decision.verdict !== DecisionVerdict.PENDING_HUMAN_APPROVAL || !decision.policyAmount) {
     return decision;
   }
+  const { approval: _approval, approvedAmount: _priorApprovedAmount, ...rest } = decision;
   return {
-    ...decision,
+    ...rest,
     verdict: DecisionVerdict.ALLOW,
     reasons: [
       ...decision.reasons.filter((reason) => reason !== DecisionReason.HUMAN_APPROVAL_REQUIRED),
@@ -239,7 +240,6 @@ export function grantApprovedDecision(decision: PolicyDecision): PolicyDecision 
     ],
     approvedAmount: decision.policyAmount,
     eligibleForDelegationAssertion: true,
-    approval: undefined,
   };
 }
 
