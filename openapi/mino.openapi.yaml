@@ -1,9 +1,9 @@
 openapi: 3.0.3
 info:
   title: Mino Agentic Commerce Control Plane
-  version: 0.3.0
+  version: 0.4.0
   description: >-
-    Policy, authorization, and security firewall for agentic commerce. The MVP proxy is
+    Policy, authorization, approval, and security firewall for agentic commerce. The MVP proxy is
     pinned to Agentic Commerce Protocol API-Version 2026-04-17 and forwards ACP request
     bodies unchanged while making authorization decisions from merchant-authoritative
     checkout state.
@@ -41,7 +41,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ProxyDecisionResponse'
         '202':
-          description: Checkout session is held for human approval.
+          description: Checkout session requires a durable human approval decision.
           content:
             application/json:
               schema:
@@ -67,10 +67,12 @@ paths:
       description: >-
         Mino retrieves the current merchant CheckoutSession immediately before evaluation,
         applies the active spend mandate and machine-actor controls, atomically reserves
-        allowance in Redis, persists a durable payment outcome, extends the reservation into
-        a reconciliation hold, emits a short-lived Ed25519 delegation assertion, and only then
-        forwards payment completion. Ambiguous post-dispatch outcomes remain held and are
-        reconciled from merchant-authoritative checkout state on same-idempotency retries.
+        allowance in Redis, and persists any required ApprovalRequest before notifying the
+        approval bridge. An approved retry is accepted only when the same raw request digest,
+        merchant-authoritative checkout, policy version, amount, and reviewed soft-limit reasons
+        remain valid; hard policy and machine-actor controls are never bypassed. For ALLOW,
+        Mino persists a durable payment outcome, extends the reservation into a reconciliation
+        hold, emits a short-lived Ed25519 delegation assertion, and only then forwards payment.
       parameters:
         - $ref: '#/components/parameters/MerchantId'
         - name: checkoutSessionId
@@ -102,7 +104,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ProxyDecisionResponse'
         '202':
-          description: Payment is not forwarded; human approval is required.
+          description: Payment is not forwarded; the durable ApprovalRequest remains pending.
           content:
             application/json:
               schema:
@@ -112,7 +114,7 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
-          description: Payment is not forwarded because Mino blocked it.
+          description: Payment is not forwarded because Mino blocked it, including rejected, expired, or stale approvals.
           content:
             application/json:
               schema:
@@ -130,6 +132,72 @@ paths:
                   - $ref: '#/components/schemas/PaymentOutcomePendingError'
         '502':
           $ref: '#/components/responses/UpstreamError'
+  /v1/approvals/{approvalRequestId}:
+    get:
+      operationId: getApprovalRequest
+      summary: Read a durable human approval request
+      description: >-
+        Intended for a trusted approval bridge. The request must be authenticated with a
+        timestamped HMAC signature bound to method, exact request path, approver identity,
+        and the canonical null body digest.
+      parameters:
+        - $ref: '#/components/parameters/ApprovalRequestId'
+        - $ref: '#/components/parameters/ApproverId'
+        - $ref: '#/components/parameters/ApprovalTimestamp'
+        - $ref: '#/components/parameters/ApprovalSignature'
+      responses:
+        '200':
+          description: Current durable approval state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApprovalRequest'
+        '401':
+          $ref: '#/components/responses/ApprovalUnauthorized'
+        '404':
+          description: Approval request was not found.
+  /v1/approvals/{approvalRequestId}/votes:
+    post:
+      operationId: castApprovalVote
+      summary: Cast an authenticated human approval vote
+      description: >-
+        One durable vote is permitted per approver. Replaying the same approver/same decision
+        is idempotent. Changing a prior vote or voting after terminal resolution is rejected.
+        Any REJECT vote terminally rejects the request; APPROVE resolves only after the required
+        number of distinct approvers is reached.
+      parameters:
+        - $ref: '#/components/parameters/ApprovalRequestId'
+        - $ref: '#/components/parameters/ApproverId'
+        - $ref: '#/components/parameters/ApprovalTimestamp'
+        - $ref: '#/components/parameters/ApprovalSignature'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [decision]
+              properties:
+                decision:
+                  type: string
+                  enum: [APPROVE, REJECT]
+                comment:
+                  type: string
+      responses:
+        '200':
+          description: Vote accepted or idempotently replayed; returns current approval state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApprovalRequest'
+        '400':
+          description: Invalid vote body.
+        '401':
+          $ref: '#/components/responses/ApprovalUnauthorized'
+        '404':
+          description: Approval request was not found.
+        '409':
+          description: Approver changed an existing vote or the ApprovalRequest is already terminal.
 components:
   parameters:
     MerchantId:
@@ -185,6 +253,31 @@ components:
       required: true
       description: Base64url Ed25519 signature over method, path, timestamp, nonce, mandate digest, ACP version, idempotency key, and body digest.
       schema: { type: string, minLength: 32 }
+    ApprovalRequestId:
+      name: approvalRequestId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    ApproverId:
+      name: X-Mino-Approver-Id
+      in: header
+      required: true
+      description: Stable authenticated identity supplied by the trusted approval bridge.
+      schema: { type: string, minLength: 1, maxLength: 255 }
+    ApprovalTimestamp:
+      name: X-Mino-Approval-Timestamp
+      in: header
+      required: true
+      description: Ten-digit Unix timestamp included in the approval callback HMAC input.
+      schema: { type: string, pattern: '^\\d{10}$' }
+    ApprovalSignature:
+      name: X-Mino-Approval-Signature
+      in: header
+      required: true
+      description: >-
+        Hex HMAC-SHA256 over timestamp, uppercase method, exact request path, approver ID,
+        and the SHA-256 digest of the canonical request body.
+      schema: { type: string, pattern: '^[a-fA-F0-9]{64}$' }
   schemas:
     Money:
       type: object
@@ -236,6 +329,10 @@ components:
       properties:
         decision: { $ref: '#/components/schemas/PolicyDecision' }
         checkout_session_id: { type: string }
+        approval_request_id:
+          type: string
+          format: uuid
+          description: Durable ApprovalRequest identifier when a human decision is or was involved.
         payment_outcome_id:
           type: string
           description: Durable Mino payment-outcome identifier for a forwarded completion.
@@ -245,6 +342,48 @@ components:
         upstream:
           type: object
           additionalProperties: true
+    ApprovalVote:
+      type: object
+      required: [approver_id, decision, created_at]
+      properties:
+        approver_id: { type: string }
+        decision:
+          type: string
+          enum: [APPROVE, REJECT]
+        comment: { type: string }
+        created_at: { type: string, format: date-time }
+    ApprovalRequest:
+      type: object
+      required:
+        - approval_request_id
+        - status
+        - decision_id
+        - request_id
+        - merchant_domain
+        - amount_minor
+        - currency
+        - required_signatures
+        - votes
+        - created_at
+        - expires_at
+      properties:
+        approval_request_id: { type: string, format: uuid }
+        status:
+          type: string
+          enum: [PENDING, APPROVED, REJECTED, EXPIRED]
+        decision_id: { type: string }
+        request_id: { type: string }
+        merchant_domain: { type: string }
+        checkout_session_id: { type: string }
+        amount_minor: { type: string, pattern: '^\\d+$' }
+        currency: { type: string, minLength: 3, maxLength: 3 }
+        required_signatures: { type: integer, minimum: 1 }
+        votes:
+          type: array
+          items: { $ref: '#/components/schemas/ApprovalVote' }
+        created_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time }
+        resolved_at: { type: string, format: date-time }
     IdempotencyConflictError:
       type: object
       required: [error, reason]
@@ -279,6 +418,18 @@ components:
             properties:
               error: { type: string, enum: [UNAUTHORIZED] }
               reason: { type: string }
+    ApprovalUnauthorized:
+      description: Approval bridge callback authentication failed.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [error, reason]
+            properties:
+              error: { type: string, enum: [UNAUTHORIZED] }
+              reason:
+                type: string
+                enum: [INVALID_APPROVER, INVALID_TIMESTAMP, TIMESTAMP_OUT_OF_RANGE, INVALID_SIGNATURE]
     IdempotencyConflict:
       description: The idempotency key was reused for a materially different request.
       content:
