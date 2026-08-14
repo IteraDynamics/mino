@@ -4,7 +4,7 @@ Mino is a policy, authorization, approval, and security control plane for agenti
 
 ## Implemented MVP security path
 
-The current branch contains the policy kernel plus the ACP proxy, payment-reconciliation, autonomous reconciliation, durable human-approval, and tamper-evident audit slices:
+The current branch contains the policy kernel plus the ACP proxy, payment-reconciliation, autonomous reconciliation, durable human-approval, tamper-evident audit, and production-application wiring slices:
 
 1. **Spend mandate** — Mino issues/verifies compact Ed25519-signed mandate tokens. The bearer token only carries identity/delegation references; the immutable server-side mandate snapshot remains authoritative and raw token values are never persisted.
 2. **Agent identity proof** — payment-facing requests carry an Ed25519 request signature bound to method, path, timestamp, nonce, mandate-token JTI digest, ACP version, idempotency key, and canonical body digest. Nonces are claimed in Redis to reject replay.
@@ -22,6 +22,7 @@ The current branch contains the policy kernel plus the ACP proxy, payment-reconc
 14. **Autonomous reconciliation** — unresolved `UNKNOWN` outcomes and stale `FORWARDING` rows are leased from PostgreSQL with `FOR UPDATE SKIP LOCKED`, refreshed in Redis, queried from merchant-authoritative state using server-side credentials, and retried with exponential backoff without depending on an agent retry.
 15. **Tamper-evident audit ledger** — sanitized gateway decisions are persisted in a per-organization SHA-256 hash chain with organization-local sequence numbers and Ed25519 signatures. Concurrent writers serialize through a locked per-organization `AuditChainHead` row, signing-key rotation is supported, and verification detects mutation, reordering, chain gaps, and invalid signatures.
 16. **External audit checkpoints** — Mino can issue a signed checkpoint of an organization's current audit-chain head. Retaining that checkpoint outside the same mutable database provides an anchor that detects truncation of the newest ledger suffix.
+17. **Production application composition** — a concrete composition root now connects PostgreSQL, Prisma, Redis, repositories, key providers, policy evaluation, reservations, approvals, payment outcomes, audit, ACP forwarding, delegation assertions, and the reconciliation worker into one runnable Fastify service. Startup validates critical dependencies and security configuration, `/readyz` checks data-plane readiness, and shutdown closes application resources cleanly.
 
 ## ACP trust boundary
 
@@ -38,6 +39,8 @@ POST /v1/acp/:merchantId/checkout_sessions
 POST /v1/acp/:merchantId/checkout_sessions/:checkoutSessionId/complete
 GET  /v1/approvals/:approvalRequestId
 POST /v1/approvals/:approvalRequestId/votes
+GET  /healthz
+GET  /readyz
 ```
 
 The ACP request body remains protocol-compatible. Mino-specific delegation and agent-proof material lives in headers. Approval bridge endpoints use separate timestamped HMAC authentication. See `openapi/mino.openapi.yaml`.
@@ -64,6 +67,19 @@ The ACP request body remains protocol-compatible. Mino-specific delegation and a
 - Internal mutation, reordering, middle deletion, sequence gaps, changed chain links, and signature corruption are detectable.
 - A database-local hash chain cannot by itself prove that a privileged attacker deleted the newest suffix and rewrote the mutable local head to the remaining prefix. A signed checkpoint retained outside PostgreSQL (for example in independent object storage, a compliance archive, or another trust domain) anchors a known chain head and makes that truncation detectable.
 - The ledger is therefore described as **tamper-evident**, not as magically immutable against a database superuser. See `docs/audit-integrity.md`.
+
+## Production runtime
+
+The compiled application starts with:
+
+```bash
+npm run build
+npm start
+```
+
+Production startup fails closed when required data stores, keys, or security configuration are unavailable or malformed. `GET /healthz` is process liveness; `GET /readyz` checks PostgreSQL, Prisma, and Redis connectivity before reporting the service ready for transaction traffic. `SIGTERM` and `SIGINT` trigger an idempotent graceful shutdown.
+
+Private signing keys and merchant reconciliation credentials are supplied from deployment configuration, not persisted in Mino's transactional tables. The current environment-backed provider is a concrete composition boundary; managed vault/KMS integration remains production operations work. See `docs/production-runtime.md`.
 
 ## Policy evaluator invariants
 
@@ -109,7 +125,8 @@ npm run test:integration
 
 ## Next implementation slice
 
-- Add merchant/mandate/agent-key Prisma repositories and production application wiring, including concrete audit signing-key configuration.
-- Add an explicit delivery/outbox mechanism for approval notifications so webhook delivery can retry independently of the request path.
+- Add a durable notification outbox so approval webhook delivery can retry independently of the payment request path.
+- Add a continuously scheduled process/loop around the background payment reconciler and operational alerting for unresolved outcomes.
+- Add managed secret-vault/KMS integration and operational key-rotation procedures.
 - Add operational export/retention for signed audit checkpoints in a separate trust domain.
 - Expand ACP proxy coverage to retrieve/update/cancel while keeping only payment-bearing operations behind spend reservation.
