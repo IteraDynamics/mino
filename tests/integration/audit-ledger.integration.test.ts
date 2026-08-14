@@ -136,10 +136,10 @@ integration("PostgresAuditLedger", () => {
       chainDigest: string;
       requestedPayload: { payment_data?: { token?: string; card_number?: string } };
     }>(
-      `select "chainSequence"::text as "chainSequence", "previousChainDigest", "chainDigest", "requestedPayload"
-         from "AuditLog"
-        where "organizationId" = $1::uuid
-        order by "chainSequence"`,
+      `select a."chainSequence"::text as "chainSequence", a."previousChainDigest", a."chainDigest", a."requestedPayload"
+         from "AuditLog" a
+        where a."organizationId" = $1::uuid
+        order by a."chainSequence"`,
       [ids.organization],
     );
     const head = await pool.query<{ chainSequence: string; chainDigest: string | null }>(
