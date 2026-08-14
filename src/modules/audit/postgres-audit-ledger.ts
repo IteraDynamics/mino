@@ -43,7 +43,7 @@ export interface AuditSqlClient {
 
 interface ChainHeadRow extends QueryResultRow {
   chainSequence: string;
-  chainDigest: string;
+  chainDigest: string | null;
 }
 
 interface AuditLogRow extends QueryResultRow {
@@ -152,23 +152,28 @@ export class PostgresAuditLedger implements AuditSink {
     try {
       await tx.query("begin");
       await tx.query(
-        "select pg_advisory_xact_lock(hashtextextended($1::text, 0))",
-        [event.organizationId],
+        `insert into "AuditChainHead" (
+           "organizationId", "chainSequence", "chainDigest", "updatedAt"
+         ) values ($1::uuid, 0, null, $2)
+         on conflict ("organizationId") do nothing`,
+        [event.organizationId, event.timestamp],
       );
 
       const head = (
         await tx.query<ChainHeadRow>(
-          `select "chainSequence"::text as "chainSequence", "chainDigest"
-             from "AuditLog"
+          `select "chainSequence", "chainDigest"
+             from "AuditChainHead"
             where "organizationId" = $1::uuid
-            order by "chainSequence" desc
-            limit 1`,
+            for update`,
           [event.organizationId],
         )
       ).rows[0];
+      if (!head) {
+        throw new Error("Audit chain head could not be initialized");
+      }
 
-      const chainSequence = head ? BigInt(head.chainSequence) + 1n : 1n;
-      const previousChainDigest = head?.chainDigest;
+      const chainSequence = BigInt(head.chainSequence) + 1n;
+      const previousChainDigest = head.chainDigest ?? undefined;
       const chainDigest = computeChainDigest({
         organizationId: event.organizationId,
         chainSequence,
@@ -234,6 +239,18 @@ export class PostgresAuditLedger implements AuditSink {
         ],
       );
 
+      const advanced = await tx.query(
+        `update "AuditChainHead"
+            set "chainSequence" = $2::bigint,
+                "chainDigest" = $3,
+                "updatedAt" = $4
+          where "organizationId" = $1::uuid`,
+        [event.organizationId, chainSequence.toString(10), chainDigest, event.timestamp],
+      );
+      if (advanced.rowCount !== 1) {
+        throw new Error("Audit chain head could not be advanced");
+      }
+
       await tx.query("commit");
     } catch (error) {
       try {
@@ -253,11 +270,9 @@ export class PostgresAuditLedger implements AuditSink {
   ): Promise<AuditChainCheckpoint> {
     const head = (
       await this.sql.query<ChainHeadRow>(
-        `select "chainSequence"::text as "chainSequence", "chainDigest"
-           from "AuditLog"
-          where "organizationId" = $1::uuid
-          order by "chainSequence" desc
-          limit 1`,
+        `select "chainSequence", "chainDigest"
+           from "AuditChainHead"
+          where "organizationId" = $1::uuid`,
         [organizationId],
       )
     ).rows[0];
@@ -304,10 +319,10 @@ export class PostgresAuditVerifier {
 
     const rows = (
       await this.sql.query<AuditLogRow>(
-        `select *, "chainSequence"::text as "chainSequence"
-           from "AuditLog"
-          where "organizationId" = $1::uuid
-          order by "chainSequence" asc`,
+        `select a.*
+           from "AuditLog" a
+          where a."organizationId" = $1::uuid
+          order by a."chainSequence" asc`,
         [organizationId],
       )
     ).rows;
@@ -319,15 +334,15 @@ export class PostgresAuditVerifier {
 
     for (const row of rows) {
       const sequence = BigInt(row.chainSequence);
-      const preSignatureFailure = validateRowStructure(
+      const structuralFailure = validateRowStructure(
         row,
         sequence,
         expectedSequence,
         previousChainDigest,
       );
-      if (preSignatureFailure) {
+      if (structuralFailure) {
         return failureResult(
-          preSignatureFailure,
+          structuralFailure,
           checkedEvents,
           expectedSequence - 1n,
           previousChainDigest,
