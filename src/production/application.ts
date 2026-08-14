@@ -6,18 +6,10 @@ import { createClient } from "redis";
 import { PrismaClient } from "../generated/prisma/client.js";
 import { createApp } from "../app.js";
 import { AgentRequestVerifier } from "../modules/agents/agent-request-verifier.js";
-import {
-  HmacApprovalResolutionAuthenticator,
-} from "../modules/approvals/approval-resolution-authenticator.js";
-import {
-  WebhookApprovalEmitter,
-} from "../modules/approvals/approval-emitter.js";
-import {
-  PostgresApprovalRequestStore,
-} from "../modules/approvals/approval-request.store.js";
-import {
-  DurableHumanApprovalService,
-} from "../modules/approvals/durable-approval.service.js";
+import { HmacApprovalResolutionAuthenticator } from "../modules/approvals/approval-resolution-authenticator.js";
+import { WebhookApprovalEmitter } from "../modules/approvals/approval-emitter.js";
+import { PostgresApprovalRequestStore } from "../modules/approvals/approval-request.store.js";
+import { DurableHumanApprovalService } from "../modules/approvals/durable-approval.service.js";
 import {
   PostgresAuditLedger,
   PostgresAuditVerifier,
@@ -29,7 +21,10 @@ import { PolicyEvaluator } from "../modules/policy/policy-evaluator.js";
 import { ACPAdapter } from "../modules/proxy/acp-adapter.js";
 import { CheckoutProxyService } from "../modules/proxy/checkout-proxy.service.js";
 import { DelegationAssertionService } from "../modules/proxy/delegation-assertion.service.js";
-import { FetchACPMerchantClient } from "../modules/proxy/merchant-client.js";
+import {
+  FetchACPMerchantClient,
+  type ACPMerchantClient,
+} from "../modules/proxy/merchant-client.js";
 import { AuthorizationReservationService } from "../modules/spending/authorization-reservation.service.js";
 import type { ProductionConfig } from "../infrastructure/config/production-config.js";
 import {
@@ -49,6 +44,13 @@ import {
   RedisNonceReplayGuard,
 } from "../infrastructure/redis/redis-adapters.js";
 
+export interface ProductionApplicationOverrides {
+  readonly merchantClient?: ACPMerchantClient;
+  readonly generateId?: () => string;
+  readonly now?: () => Date;
+  readonly logger?: boolean;
+}
+
 export interface ProductionApplication {
   readonly app: Awaited<ReturnType<typeof createApp>>;
   readonly reconciler: BackgroundPaymentReconciler;
@@ -65,7 +67,9 @@ export interface ProductionApplication {
 
 export async function createProductionApplication(
   config: ProductionConfig,
+  overrides: ProductionApplicationOverrides = {},
 ): Promise<ProductionApplication> {
+  const generateId = overrides.generateId ?? randomUUID;
   const sqlPool = new Pool({
     connectionString: config.databaseUrl,
     connectionTimeoutMillis: 5_000,
@@ -108,7 +112,7 @@ export async function createProductionApplication(
     const approvals = new DurableHumanApprovalService(
       new PostgresApprovalRequestStore(sql),
       new WebhookApprovalEmitter(config.approvalWebhook),
-      randomUUID,
+      generateId,
     );
     const approvalAuthenticator = new HmacApprovalResolutionAuthenticator({
       secret: config.approvalResolutionSecret,
@@ -120,7 +124,7 @@ export async function createProductionApplication(
     );
     const audit = new PostgresAuditLedger(sql, auditKeys);
     const auditVerifier = new PostgresAuditVerifier(sql, auditKeys);
-    const merchantClient = new FetchACPMerchantClient();
+    const merchantClient = overrides.merchantClient ?? new FetchACPMerchantClient();
     const proxy = new CheckoutProxyService({
       mandateTokens,
       mandates,
@@ -129,26 +133,27 @@ export async function createProductionApplication(
       merchantClient,
       adapter: new ACPAdapter(),
       evaluator: new PolicyEvaluator({
-        generateId: randomUUID,
+        generateId,
         monotonicMicros: () => Math.floor(performance.now() * 1_000),
       }),
       reservations,
       paymentOutcomes,
       delegationAssertions: new DelegationAssertionService(
         config.delegationSigningKey,
-        randomUUID,
+        generateId,
         { issuer: config.issuer },
       ),
       approvals,
       audit,
-      generateId: randomUUID,
+      generateId,
     });
 
     app = await createApp({
       proxy,
       approvals,
       approvalAuthenticator,
-      logger: true,
+      logger: overrides.logger ?? true,
+      ...(overrides.now ? { now: overrides.now } : {}),
     });
 
     const readiness = async (): Promise<boolean> => {
@@ -177,7 +182,7 @@ export async function createProductionApplication(
       merchants,
       merchantClient,
       credentials: new StaticMerchantCredentialProvider(config.merchantCredentials),
-      generateRequestId: randomUUID,
+      generateRequestId: generateId,
     });
 
     let closed = false;
