@@ -33,6 +33,7 @@ integration("PostgreSQL schema", () => {
       "SpendReservation",
       "PaymentOutcome",
       "ApprovalRequest",
+      "ApprovalVote",
       "AuditLog",
     ]) {
       expect(tables.has(table)).toBe(true);
@@ -89,6 +90,36 @@ integration("PostgreSQL schema", () => {
     expect(
       constraints.rows.some((row) =>
         row.indexdef.includes('UNIQUE') && row.indexdef.includes('"reservationId"'),
+      ),
+    ).toBe(true);
+  });
+
+  it("enforces approval request idempotency and one vote per approver", async () => {
+    const approvalIndexes = await pool.query<{ indexdef: string }>(
+      `select indexdef
+         from pg_indexes
+        where schemaname = 'public'
+          and tablename = 'ApprovalRequest'`,
+    );
+    const voteIndexes = await pool.query<{ indexdef: string }>(
+      `select indexdef
+         from pg_indexes
+        where schemaname = 'public'
+          and tablename = 'ApprovalVote'`,
+    );
+
+    expect(
+      approvalIndexes.rows.some((row) =>
+        row.indexdef.includes('UNIQUE') &&
+        row.indexdef.includes('"organizationId"') &&
+        row.indexdef.includes('"idempotencyKey"'),
+      ),
+    ).toBe(true);
+    expect(
+      voteIndexes.rows.some((row) =>
+        row.indexdef.includes('UNIQUE') &&
+        row.indexdef.includes('"approvalRequestId"') &&
+        row.indexdef.includes('"approverId"'),
       ),
     ).toBe(true);
   });
