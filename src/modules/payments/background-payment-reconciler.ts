@@ -1,7 +1,6 @@
 import { redactSensitivePayload } from "../audit/audit-sink.js";
 import type {
   ACPMerchantClient,
-  MerchantEndpoint,
   MerchantRegistry,
   MerchantResponse,
 } from "../proxy/merchant-client.js";
@@ -289,7 +288,7 @@ export class BackgroundPaymentReconciler {
     upstreamStatus?: number,
   ): Promise<"DEFERRED"> {
     const delayMs = reconciliationBackoffMs(
-      outcome.reconcileAttempts,
+      outcome.reconcileAttempts ?? 1,
       this.baseBackoffMs,
       this.maxBackoffMs,
     );
