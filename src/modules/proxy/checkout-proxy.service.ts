@@ -1,6 +1,7 @@
 import { canonicalJson, sha256Base64Url } from "../../infrastructure/crypto/canonical-json.js";
 import type { FxQuote } from "../../domain/money.js";
 import type { AgentSpendMandate } from "../../domain/mandates/mandate.types.js";
+import type { CheckoutIntent } from "../../domain/checkout/checkout.types.js";
 import {
   DecisionVerdict,
   type PolicyDecision,
@@ -15,6 +16,13 @@ import type { AuditSink } from "../audit/audit-sink.js";
 import { redactSensitivePayload } from "../audit/audit-sink.js";
 import type { MandateTokenService } from "../mandates/mandate-token.service.js";
 import {
+  BeginPaymentOutcomeKind,
+  PaymentOutcomeStatus,
+  type PaymentOutcomeRecord,
+  type PaymentOutcomeStore,
+  type StoredMerchantResponse,
+} from "../payments/payment-outcome.store.js";
+import {
   ReservationStatus,
   type AuthorizationReservations,
 } from "../spending/authorization-reservation.service.js";
@@ -23,6 +31,7 @@ import {
   ACPProtocolError,
   ACP_STABLE_VERSION,
   parseCheckoutSession,
+  type ACPCheckoutSession,
 } from "./acp-adapter.js";
 import type {
   ACPMerchantClient,
@@ -49,6 +58,7 @@ export interface CheckoutProxyServiceDependencies {
   readonly adapter: ACPAdapter;
   readonly evaluator: PolicyEvaluator;
   readonly reservations: AuthorizationReservations;
+  readonly paymentOutcomes: PaymentOutcomeStore;
   readonly delegationAssertions: DelegationAssertionIssuer;
   readonly approvals: HumanApprovalEmitter;
   readonly audit: AuditSink;
@@ -84,6 +94,8 @@ export interface CheckoutProxyResult {
   readonly checkoutSessionId?: string;
   readonly upstream?: MerchantResponse;
   readonly reservationId?: string;
+  readonly paymentOutcomeId?: string;
+  readonly replayed?: boolean;
 }
 
 export class ProxyAuthenticationError extends Error {
@@ -115,6 +127,16 @@ export class IdempotencyConflictError extends Error {
   public constructor() {
     super("Idempotency key was reused for a different request");
     this.name = "IdempotencyConflictError";
+  }
+}
+
+export class PaymentOutcomePendingError extends Error {
+  public constructor(
+    public readonly outcomeId: string,
+    public readonly upstreamStatus?: number,
+  ) {
+    super("Payment outcome is unresolved; retry with the same idempotency key to reconcile");
+    this.name = "PaymentOutcomePendingError";
   }
 }
 
@@ -166,7 +188,6 @@ export class CheckoutProxyService {
     });
 
     if (decision.verdict === DecisionVerdict.BLOCK) {
-      // Best-effort cleanup only. Failure to cancel must not turn the blocked decision into allow.
       await this.deps.merchantClient
         .cancelCheckout(merchant, session.id, headers)
         .catch(() => undefined);
@@ -196,7 +217,6 @@ export class CheckoutProxyService {
     const merchant = await this.resolveMerchant(auth.mandate.organizationId, input.merchantId);
     const headers = this.upstreamHeaders(input);
 
-    // ACP merchant state is authoritative. Agent-provided prices are never used for authorization.
     const current = await this.deps.merchantClient.getCheckout(
       merchant,
       input.checkoutSessionId,
@@ -226,8 +246,6 @@ export class CheckoutProxyService {
     });
 
     const fxQuote = await this.resolveFxQuote(intent.total.currency, auth.mandate.currency, input.now);
-
-    // First pass performs all static/integrity checks and computes the normalized policy amount.
     const preflight = this.deps.evaluator.evaluate({
       now: input.now,
       mandate: auth.mandate,
@@ -261,16 +279,26 @@ export class CheckoutProxyService {
       };
     }
 
-    const reservationId = this.deps.generateId();
-    const requestDigest = sha256Base64Url(
-      canonicalJson({
-        merchantId: input.merchantId,
-        checkoutSessionId: input.checkoutSessionId,
-        request: redactSensitivePayload(input.body),
-        authoritativeCheckout: session,
-      }),
+    const requestDigest = completionRequestDigest(input, intent);
+    const priorOutcome = await this.deps.paymentOutcomes.getByIdempotency(
+      auth.mandate.organizationId,
+      input.idempotencyKey,
     );
+    if (priorOutcome) {
+      if (priorOutcome.requestDigest !== requestDigest) {
+        throw new IdempotencyConflictError();
+      }
+      return this.resolveExistingOutcome({
+        outcome: priorOutcome,
+        decision: preflight,
+        input,
+        mandate: auth.mandate,
+        merchant,
+        session,
+      });
+    }
 
+    const reservationId = this.deps.generateId();
     const reservation = await this.deps.reservations.tryReserve({
       mandate: auth.mandate,
       amount: preflight.approvedAmount,
@@ -325,9 +353,48 @@ export class CheckoutProxyService {
       };
     }
 
-    if (!activeReservationId) {
-      // If Redis says the operation was dynamically allowed but no reservation exists, fail closed.
+    if (!activeReservationId || !finalDecision.approvedAmount) {
       throw new Error("Authorization state is inconsistent: ALLOW without spend reservation");
+    }
+
+    const begun = await this.deps.paymentOutcomes.begin({
+      id: this.deps.generateId(),
+      organizationId: auth.mandate.organizationId,
+      userId: auth.mandate.userId,
+      agentId: auth.mandate.agentId,
+      mandateId: auth.mandate.id,
+      reservationId: activeReservationId,
+      idempotencyKey: input.idempotencyKey,
+      requestDigest,
+      merchantId: input.merchantId,
+      merchantDomain: merchant.domain,
+      checkoutSessionId: input.checkoutSessionId,
+      amountMinor: finalDecision.approvedAmount.minorUnits,
+      currency: finalDecision.approvedAmount.currency,
+      now: input.now,
+    });
+
+    if (begun.kind === BeginPaymentOutcomeKind.CONFLICT) {
+      throw new IdempotencyConflictError();
+    }
+    if (begun.kind === BeginPaymentOutcomeKind.EXISTING) {
+      return this.resolveExistingOutcome({
+        outcome: begun.outcome,
+        decision: finalDecision,
+        input,
+        mandate: auth.mandate,
+        merchant,
+        session,
+      });
+    }
+
+    const held = await this.deps.reservations.holdForReconciliation(
+      auth.mandate.id,
+      activeReservationId,
+      input.now,
+    );
+    if (!held) {
+      throw new Error("Unable to protect forwarded payment with a reconciliation hold");
     }
 
     const delegationAssertion = this.deps.delegationAssertions.issue(
@@ -348,14 +415,56 @@ export class CheckoutProxyService {
         },
       );
     } catch (error) {
-      await this.deps.reservations.release(auth.mandate.id, activeReservationId);
-      throw error;
+      await this.deps.paymentOutcomes.markUnknown(begun.outcome.id, {
+        errorCode: "MERCHANT_TRANSPORT_FAILURE",
+        now: input.now,
+      });
+      await this.recordAudit({
+        input,
+        mandate: auth.mandate,
+        merchant,
+        decision: finalDecision,
+        approvedPayload: session,
+        reservationId: activeReservationId,
+      });
+      throw new PaymentOutcomePendingError(begun.outcome.id);
     }
 
+    const storedResponse = sanitizeMerchantResponse(upstream);
+
     if (upstream.status >= 200 && upstream.status < 300) {
-      await this.deps.reservations.commit(auth.mandate.id, activeReservationId, input.now);
-    } else {
+      await this.deps.paymentOutcomes.markSucceeded(begun.outcome.id, storedResponse, input.now);
+      const committed = await this.deps.reservations.commit(
+        auth.mandate.id,
+        activeReservationId,
+        input.now,
+      );
+      if (!committed) {
+        throw new Error("Merchant succeeded but spend reservation could not be committed");
+      }
+    } else if (isDefinitiveMerchantFailure(upstream.status)) {
+      await this.deps.paymentOutcomes.markDefinitiveFailure(
+        begun.outcome.id,
+        storedResponse,
+        input.now,
+      );
       await this.deps.reservations.release(auth.mandate.id, activeReservationId);
+    } else {
+      await this.deps.paymentOutcomes.markUnknown(begun.outcome.id, {
+        upstreamStatus: upstream.status,
+        errorCode: ambiguousOutcomeCode(upstream.status),
+        now: input.now,
+      });
+      await this.recordAudit({
+        input,
+        mandate: auth.mandate,
+        merchant,
+        decision: finalDecision,
+        approvedPayload: session,
+        reservationId: activeReservationId,
+        upstreamStatus: upstream.status,
+      });
+      throw new PaymentOutcomePendingError(begun.outcome.id, upstream.status);
     }
 
     await this.recordAudit({
@@ -373,7 +482,112 @@ export class CheckoutProxyService {
       checkoutSessionId: input.checkoutSessionId,
       upstream,
       reservationId: activeReservationId,
+      paymentOutcomeId: begun.outcome.id,
     };
+  }
+
+  private async resolveExistingOutcome(args: {
+    readonly outcome: PaymentOutcomeRecord;
+    readonly decision: PolicyDecision;
+    readonly input: CompleteCheckoutProxyInput;
+    readonly mandate: AgentSpendMandate;
+    readonly merchant: MerchantEndpoint;
+    readonly session: ACPCheckoutSession;
+  }): Promise<CheckoutProxyResult> {
+    const { outcome, decision, input, mandate, merchant, session } = args;
+
+    if (outcome.status === PaymentOutcomeStatus.SUCCEEDED) {
+      if (!outcome.response) {
+        throw new Error("Succeeded payment outcome is missing its stored response");
+      }
+      const committed = await this.deps.reservations.commit(
+        mandate.id,
+        outcome.reservationId,
+        input.now,
+      );
+      if (!committed) {
+        throw new Error("Succeeded payment outcome could not restore committed spend state");
+      }
+      return replayResult(decision, input.checkoutSessionId, outcome);
+    }
+
+    if (outcome.status === PaymentOutcomeStatus.FAILED_DEFINITIVE) {
+      if (!outcome.response) {
+        throw new Error("Failed payment outcome is missing its stored response");
+      }
+      await this.deps.reservations.release(mandate.id, outcome.reservationId);
+      return replayResult(decision, input.checkoutSessionId, outcome);
+    }
+
+    const status = session.status.trim().toLowerCase();
+    if (status === "completed") {
+      const reconciledResponse: StoredMerchantResponse = {
+        status: 200,
+        body: redactSensitivePayload(session),
+        headers: { "idempotent-replayed": "true" },
+      };
+      await this.deps.paymentOutcomes.markSucceeded(outcome.id, reconciledResponse, input.now);
+      const committed = await this.deps.reservations.commit(
+        mandate.id,
+        outcome.reservationId,
+        input.now,
+      );
+      if (!committed) {
+        throw new Error("Reconciled merchant success could not commit spend state");
+      }
+      await this.deps.paymentOutcomes.markReconciled(outcome.id, input.now);
+      await this.recordAudit({
+        input,
+        mandate,
+        merchant,
+        decision,
+        approvedPayload: session,
+        reservationId: outcome.reservationId,
+        upstreamStatus: 200,
+      });
+      return {
+        decision,
+        checkoutSessionId: input.checkoutSessionId,
+        upstream: reconciledResponse,
+        reservationId: outcome.reservationId,
+        paymentOutcomeId: outcome.id,
+        replayed: true,
+      };
+    }
+
+    if (status === "canceled" || status === "cancelled") {
+      const reconciledResponse: StoredMerchantResponse = {
+        status: 409,
+        body: redactSensitivePayload(session),
+        headers: { "idempotent-replayed": "true" },
+      };
+      await this.deps.paymentOutcomes.markDefinitiveFailure(
+        outcome.id,
+        reconciledResponse,
+        input.now,
+      );
+      await this.deps.reservations.release(mandate.id, outcome.reservationId);
+      await this.deps.paymentOutcomes.markReconciled(outcome.id, input.now);
+      return {
+        decision,
+        checkoutSessionId: input.checkoutSessionId,
+        upstream: reconciledResponse,
+        reservationId: outcome.reservationId,
+        paymentOutcomeId: outcome.id,
+        replayed: true,
+      };
+    }
+
+    const held = await this.deps.reservations.holdForReconciliation(
+      mandate.id,
+      outcome.reservationId,
+      input.now,
+    );
+    if (!held) {
+      throw new Error("Unresolved payment outcome lost its reconciliation reservation");
+    }
+    await this.deps.paymentOutcomes.markReconciled(outcome.id, input.now);
+    throw new PaymentOutcomePendingError(outcome.id, outcome.upstreamStatus);
   }
 
   private async authenticate(
@@ -515,6 +729,73 @@ export class CheckoutProxyService {
       ...(args.upstreamStatus !== undefined ? { upstreamStatus: args.upstreamStatus } : {}),
     });
   }
+}
+
+function completionRequestDigest(input: CompleteCheckoutProxyInput, intent: CheckoutIntent): string {
+  return sha256Base64Url(
+    canonicalJson({
+      merchantId: input.merchantId,
+      checkoutSessionId: input.checkoutSessionId,
+      requestBodyDigest: sha256Base64Url(canonicalJson(input.body)),
+      authorizationState: {
+        merchant: intent.merchant,
+        currency: intent.total.currency,
+        totalMinor: intent.total.minorUnits,
+        cart: intent.cart.map((line) => ({
+          lineId: line.lineId,
+          productId: line.productId,
+          sku: line.sku,
+          category: line.category,
+          quantity: line.quantity,
+          unitPriceMinor: line.unitPrice.minorUnits,
+          totalPriceMinor: line.totalPrice.minorUnits,
+        })),
+      },
+    }),
+  );
+}
+
+function sanitizeMerchantResponse(response: MerchantResponse): StoredMerchantResponse {
+  return {
+    status: response.status,
+    body: redactSensitivePayload(response.body),
+    ...(response.headers ? { headers: response.headers } : {}),
+  };
+}
+
+function isDefinitiveMerchantFailure(status: number): boolean {
+  return status >= 400 && status < 500 && status !== 409 && status !== 422;
+}
+
+function ambiguousOutcomeCode(status: number): string {
+  if (status === 409) {
+    return "MERCHANT_IDEMPOTENCY_IN_FLIGHT";
+  }
+  if (status === 422) {
+    return "MERCHANT_IDEMPOTENCY_CONFLICT";
+  }
+  if (status >= 500) {
+    return "MERCHANT_SERVER_ERROR_AFTER_DISPATCH";
+  }
+  return "MERCHANT_NONDEFINITIVE_RESPONSE";
+}
+
+function replayResult(
+  decision: PolicyDecision,
+  checkoutSessionId: string,
+  outcome: PaymentOutcomeRecord,
+): CheckoutProxyResult {
+  if (!outcome.response) {
+    throw new Error("Terminal payment outcome is missing a replayable merchant response");
+  }
+  return {
+    decision,
+    checkoutSessionId,
+    upstream: outcome.response,
+    reservationId: outcome.reservationId,
+    paymentOutcomeId: outcome.id,
+    replayed: true,
+  };
 }
 
 function zeroSpend(currency: string): SpendState {

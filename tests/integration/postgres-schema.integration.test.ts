@@ -31,6 +31,7 @@ integration("PostgreSQL schema", () => {
       "AgentMandate",
       "MerchantEndpoint",
       "SpendReservation",
+      "PaymentOutcome",
       "ApprovalRequest",
       "AuditLog",
     ]) {
@@ -66,6 +67,28 @@ integration("PostgreSQL schema", () => {
         row.indexdef.includes('UNIQUE') &&
         row.indexdef.includes('"organizationId"') &&
         row.indexdef.includes('"idempotencyKey"'),
+      ),
+    ).toBe(true);
+  });
+
+  it("enforces organization-scoped payment-outcome idempotency in PostgreSQL", async () => {
+    const constraints = await pool.query<{ indexdef: string }>(
+      `select indexdef
+         from pg_indexes
+        where schemaname = 'public'
+          and tablename = 'PaymentOutcome'`,
+    );
+
+    expect(
+      constraints.rows.some((row) =>
+        row.indexdef.includes('UNIQUE') &&
+        row.indexdef.includes('"organizationId"') &&
+        row.indexdef.includes('"idempotencyKey"'),
+      ),
+    ).toBe(true);
+    expect(
+      constraints.rows.some((row) =>
+        row.indexdef.includes('UNIQUE') && row.indexdef.includes('"reservationId"'),
       ),
     ).toBe(true);
   });

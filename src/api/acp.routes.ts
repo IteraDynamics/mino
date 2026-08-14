@@ -3,6 +3,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import {
   CheckoutProxyService,
   IdempotencyConflictError,
+  PaymentOutcomePendingError,
   ProxyAuthenticationError,
   ProxyProtocolError,
   ProxyUpstreamError,
@@ -125,6 +126,8 @@ function sendDecision(reply: FastifyReply, result: Awaited<ReturnType<CheckoutPr
   return reply.code(status).send({
     decision: serializeDecision(result.decision),
     ...(result.checkoutSessionId ? { checkout_session_id: result.checkoutSessionId } : {}),
+    ...(result.paymentOutcomeId ? { payment_outcome_id: result.paymentOutcomeId } : {}),
+    ...(result.replayed ? { idempotent_replayed: true } : {}),
     ...(result.upstream ? { upstream: result.upstream.body } : {}),
   });
 }
@@ -163,6 +166,16 @@ function sendError(reply: FastifyReply, error: unknown) {
     });
   }
 
+  if (error instanceof PaymentOutcomePendingError) {
+    reply.header("Retry-After", "2");
+    return reply.code(409).send({
+      error: "PAYMENT_OUTCOME_PENDING",
+      reason: error.message,
+      payment_outcome_id: error.outcomeId,
+      ...(error.upstreamStatus !== undefined ? { upstream_status: error.upstreamStatus } : {}),
+    });
+  }
+
   if (error instanceof ProxyUpstreamError) {
     return reply.code(502).send({
       error: "UPSTREAM_ERROR",
@@ -175,6 +188,5 @@ function sendError(reply: FastifyReply, error: unknown) {
 }
 
 function requestSafeLog(error: unknown): void {
-  // Deliberately avoid serializing request payloads or payment credentials here.
   console.error(error instanceof Error ? error.message : "Unknown Mino proxy error");
 }

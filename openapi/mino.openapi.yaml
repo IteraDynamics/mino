@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Mino Agentic Commerce Control Plane
-  version: 0.2.0
+  version: 0.3.0
   description: >-
     Policy, authorization, and security firewall for agentic commerce. The MVP proxy is
     pinned to Agentic Commerce Protocol API-Version 2026-04-17 and forwards ACP request
@@ -67,8 +67,10 @@ paths:
       description: >-
         Mino retrieves the current merchant CheckoutSession immediately before evaluation,
         applies the active spend mandate and machine-actor controls, atomically reserves
-        allowance in Redis, emits a short-lived Ed25519 delegation assertion, and only then
-        forwards payment completion.
+        allowance in Redis, persists a durable payment outcome, extends the reservation into
+        a reconciliation hold, emits a short-lived Ed25519 delegation assertion, and only then
+        forwards payment completion. Ambiguous post-dispatch outcomes remain held and are
+        reconciled from merchant-authoritative checkout state on same-idempotency retries.
       parameters:
         - $ref: '#/components/parameters/MerchantId'
         - name: checkoutSessionId
@@ -94,7 +96,7 @@ paths:
             description: ACP 2026-04-17 CheckoutSessionCompleteRequest, forwarded unchanged only after ALLOW.
       responses:
         '200':
-          description: Mino allowed the payment operation and the merchant processed the request.
+          description: Mino allowed the payment operation and the merchant processed or previously processed the request.
           content:
             application/json:
               schema:
@@ -116,7 +118,16 @@ paths:
               schema:
                 $ref: '#/components/schemas/ProxyDecisionResponse'
         '409':
-          $ref: '#/components/responses/IdempotencyConflict'
+          description: >-
+            Either the idempotency key conflicts with a materially different request, or a
+            previously forwarded payment still has an unresolved outcome and must be retried
+            with the same idempotency key for reconciliation.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/IdempotencyConflictError'
+                  - $ref: '#/components/schemas/PaymentOutcomePendingError'
         '502':
           $ref: '#/components/responses/UpstreamError'
 components:
@@ -225,9 +236,29 @@ components:
       properties:
         decision: { $ref: '#/components/schemas/PolicyDecision' }
         checkout_session_id: { type: string }
+        payment_outcome_id:
+          type: string
+          description: Durable Mino payment-outcome identifier for a forwarded completion.
+        idempotent_replayed:
+          type: boolean
+          description: True when Mino returned a durable/reconciled result without forwarding another payment.
         upstream:
           type: object
           additionalProperties: true
+    IdempotencyConflictError:
+      type: object
+      required: [error, reason]
+      properties:
+        error: { type: string, enum: [IDEMPOTENCY_CONFLICT] }
+        reason: { type: string }
+    PaymentOutcomePendingError:
+      type: object
+      required: [error, reason, payment_outcome_id]
+      properties:
+        error: { type: string, enum: [PAYMENT_OUTCOME_PENDING] }
+        reason: { type: string }
+        payment_outcome_id: { type: string }
+        upstream_status: { type: integer }
   responses:
     ProtocolError:
       description: Unsupported or invalid ACP protocol input.
@@ -238,7 +269,6 @@ components:
             properties:
               error: { type: string, enum: [PROTOCOL_ERROR] }
               reason: { type: string }
-    
     Unauthorized:
       description: Mandate token or agent request proof failed authentication.
       content:
@@ -254,10 +284,7 @@ components:
       content:
         application/json:
           schema:
-            type: object
-            properties:
-              error: { type: string, enum: [IDEMPOTENCY_CONFLICT] }
-              reason: { type: string }
+            $ref: '#/components/schemas/IdempotencyConflictError'
     UpstreamError:
       description: The configured ACP merchant endpoint could not provide a valid response.
       content:
