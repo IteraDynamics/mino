@@ -75,6 +75,7 @@ model Organization {
   policies        Policy[]
   mandates        AgentMandate[]
   auditLogs       AuditLog[]
+  auditChainHead  AuditChainHead?
   approvals       ApprovalRequest[]
   reservations    SpendReservation[]
   merchants       MerchantEndpoint[]
@@ -344,6 +345,15 @@ model ApprovalVote {
 
   @@unique([approvalRequestId, approverId])
   @@index([approvalRequestId, decision, createdAt])
+}
+
+model AuditChainHead {
+  organizationId String   @id @db.Uuid
+  chainSequence  BigInt   @default(0) @db.BigInt
+  chainDigest    String?
+  updatedAt      DateTime @default(now()) @updatedAt @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 }
 
 model AuditLog {
