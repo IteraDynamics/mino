@@ -358,23 +358,42 @@ export class CheckoutProxyService {
     let approvalRequestId = existingApproval?.id;
 
     if (evaluatedFinalDecision.verdict === DecisionVerdict.PENDING_HUMAN_APPROVAL) {
-      const resolved = await this.resolvePendingApproval({
-        decision: evaluatedFinalDecision,
-        existingApproval,
-        mandate: auth.mandate,
-        merchant,
-        input,
-        session,
-        requestDigest,
-        spend: reservation.spend,
-      });
-      finalDecision = resolved.decision;
-      approvalRequestId = resolved.approvalRequestId;
+      try {
+        const resolved = await this.resolvePendingApproval({
+          decision: evaluatedFinalDecision,
+          existingApproval,
+          mandate: auth.mandate,
+          merchant,
+          input,
+          session,
+          requestDigest,
+          spend: reservation.spend,
+        });
+        finalDecision = resolved.decision;
+        approvalRequestId = resolved.approvalRequestId;
+      } catch (error) {
+        if (activeReservationId) {
+          await this.deps.reservations.releaseForApproval(
+            auth.mandate.id,
+            activeReservationId,
+            input.idempotencyKey,
+          );
+        }
+        throw error;
+      }
     }
 
     if (finalDecision.verdict !== DecisionVerdict.ALLOW) {
       if (activeReservationId) {
-        await this.deps.reservations.release(auth.mandate.id, activeReservationId);
+        if (finalDecision.verdict === DecisionVerdict.PENDING_HUMAN_APPROVAL) {
+          await this.deps.reservations.releaseForApproval(
+            auth.mandate.id,
+            activeReservationId,
+            input.idempotencyKey,
+          );
+        } else {
+          await this.deps.reservations.release(auth.mandate.id, activeReservationId);
+        }
       }
       await this.recordAudit({
         input,
