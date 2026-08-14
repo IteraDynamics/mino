@@ -7,7 +7,11 @@ import { PrismaClient } from "../generated/prisma/client.js";
 import { createApp } from "../app.js";
 import { AgentRequestVerifier } from "../modules/agents/agent-request-verifier.js";
 import { HmacApprovalResolutionAuthenticator } from "../modules/approvals/approval-resolution-authenticator.js";
-import { WebhookApprovalEmitter } from "../modules/approvals/approval-emitter.js";
+import {
+  NoopHumanApprovalEmitter,
+  WebhookApprovalEmitter,
+} from "../modules/approvals/approval-emitter.js";
+import { ApprovalNotificationOutboxWorker } from "../modules/approvals/approval-notification-outbox.worker.js";
 import { PostgresApprovalRequestStore } from "../modules/approvals/approval-request.store.js";
 import { DurableHumanApprovalService } from "../modules/approvals/durable-approval.service.js";
 import {
@@ -54,6 +58,7 @@ export interface ProductionApplicationOverrides {
 export interface ProductionApplication {
   readonly app: Awaited<ReturnType<typeof createApp>>;
   readonly reconciler: BackgroundPaymentReconciler;
+  readonly approvalNotifications: ApprovalNotificationOutboxWorker;
   readonly auditVerifier: PostgresAuditVerifier;
   readonly repositories: {
     readonly mandates: PrismaMandateRepository;
@@ -109,10 +114,17 @@ export async function createProductionApplication(
       new RedisAuthorizationScriptClient(redis),
     );
     const paymentOutcomes = new PostgresPaymentOutcomeStore(sql);
+
+    // The ApprovalRequest row itself is the durable outbox signal. The request path never
+    // performs the external webhook call; a separate worker claims and delivers it later.
     const approvals = new DurableHumanApprovalService(
       new PostgresApprovalRequestStore(sql),
-      new WebhookApprovalEmitter(config.approvalWebhook),
+      new NoopHumanApprovalEmitter(),
       generateId,
+    );
+    const approvalNotifications = new ApprovalNotificationOutboxWorker(
+      sql,
+      new WebhookApprovalEmitter(config.approvalWebhook),
     );
     const approvalAuthenticator = new HmacApprovalResolutionAuthenticator({
       secret: config.approvalResolutionSecret,
@@ -189,6 +201,7 @@ export async function createProductionApplication(
     return {
       app,
       reconciler,
+      approvalNotifications,
       auditVerifier,
       repositories: { mandates, merchants, policies, agentKeys },
       readiness,
