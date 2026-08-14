@@ -1,10 +1,7 @@
 import { createHmac } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { canonicalJson, sha256Base64Url } from "../../src/infrastructure/crypto/canonical-json.js";
-import {
-  ApprovalResolutionAuthError,
-  HmacApprovalResolutionAuthenticator,
-} from "../../src/modules/approvals/approval-resolution-authenticator.js";
+import { HmacApprovalResolutionAuthenticator } from "../../src/modules/approvals/approval-resolution-authenticator.js";
 
 const secret = "test-approval-resolution-secret-at-least-32-bytes";
 const now = new Date("2026-08-14T16:00:00.000Z");
@@ -71,7 +68,7 @@ describe("HmacApprovalResolutionAuthenticator", () => {
           },
           now,
         }),
-      ).rejects.toMatchObject<Partial<ApprovalResolutionAuthError>>({
+      ).rejects.toMatchObject({
         code: "INVALID_SIGNATURE",
       });
     }
@@ -94,7 +91,7 @@ describe("HmacApprovalResolutionAuthenticator", () => {
         },
         now,
       }),
-    ).rejects.toMatchObject<Partial<ApprovalResolutionAuthError>>({
+    ).rejects.toMatchObject({
       code: "TIMESTAMP_OUT_OF_RANGE",
     });
   });
