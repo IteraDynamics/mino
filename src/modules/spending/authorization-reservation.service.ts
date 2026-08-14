@@ -35,6 +35,7 @@ export interface ReservationAttemptInput {
   readonly idempotencyKey: string;
   readonly requestDigest: string;
   readonly now: Date;
+  readonly allowDailyLimitOverride?: boolean;
 }
 
 export interface ReservationAttemptResult {
@@ -43,6 +44,7 @@ export interface ReservationAttemptResult {
   readonly spend: SpendState;
   readonly velocity: VelocityState;
   readonly replayed: boolean;
+  readonly dailyLimitOverridden: boolean;
 }
 
 export interface AuthorizationReservations {
@@ -105,6 +107,7 @@ export class AuthorizationReservationService implements AuthorizationReservation
         input.reservationId,
         input.requestDigest,
         input.mandate.currency.toUpperCase(),
+        input.allowDailyLimitOverride ? "1" : "0",
       ],
     });
 
@@ -168,7 +171,6 @@ export class AuthorizationReservationService implements AuthorizationReservation
   }
 
   private baseKey(mandateId: string): string {
-    // Hash tag keeps all mandate-local keys in one Redis Cluster slot.
     return `${this.keyPrefix}:{${mandateId}}`;
   }
 }
@@ -187,6 +189,7 @@ function parseReservationResponse(response: unknown, currency: string): Reservat
     distinct_merchants: number;
     merchant_domains: unknown;
     replayed?: boolean;
+    daily_limit_overridden?: boolean;
   };
 
   if (!Object.values(ReservationStatus).includes(parsed.status)) {
@@ -218,6 +221,7 @@ function parseReservationResponse(response: unknown, currency: string): Reservat
       merchantDomainsInWindow: merchantDomains,
     },
     replayed: parsed.replayed ?? false,
+    dailyLimitOverridden: parsed.daily_limit_overridden ?? false,
   };
 }
 
@@ -229,7 +233,6 @@ function parseMerchantDomains(value: unknown): string[] {
     return value;
   }
 
-  // Redis Lua cjson encodes an empty table as {} rather than [].
   if (
     value !== null &&
     typeof value === "object" &&
@@ -257,19 +260,6 @@ function assertSafeAmount(value: bigint): void {
   }
 }
 
-/**
- * Atomic authorization script.
- *
- * KEYS:
- * 1 committed spend zset       member: eventId|amountMinor, score: committedAtMs
- * 2 active reservations zset   member: reservationId|amountMinor, score: expiresAtMs
- * 3 attempt zset               member: merchant|requestId|timestamp, score: timestampMs
- * 4 idempotency record string
- * 5 reservation detail string
- *
- * The script intentionally uses Lua numbers only after the TypeScript boundary has
- * constrained values to Number.MAX_SAFE_INTEGER. That keeps comparison arithmetic exact.
- */
 export const RESERVE_SCRIPT = String.raw`
 local now = tonumber(ARGV[1])
 local rolling_window = tonumber(ARGV[2])
@@ -286,6 +276,7 @@ local request_id = ARGV[12]
 local reservation_id = ARGV[13]
 local request_digest = ARGV[14]
 local currency = ARGV[15]
+local allow_daily_override = ARGV[16] == '1'
 
 local existing = redis.call('GET', KEYS[4])
 if existing then
@@ -298,11 +289,14 @@ if existing then
       transactions_last_minute = decoded.transactions_last_minute or 0,
       distinct_merchants = decoded.distinct_merchants or 0,
       merchant_domains = decoded.merchant_domains or {},
-      replayed = true
+      replayed = true,
+      daily_limit_overridden = decoded.daily_limit_overridden or false
     })
   end
-  decoded.replayed = true
-  return cjson.encode(decoded)
+  if not (decoded.status == 'DAILY_LIMIT' and allow_daily_override) then
+    decoded.replayed = true
+    return cjson.encode(decoded)
+  end
 end
 
 redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', now - rolling_window)
@@ -345,13 +339,14 @@ end
 
 local committed = sum_amounts(KEYS[1])
 local reserved = sum_amounts(KEYS[2])
+local exceeds_daily_limit = committed + reserved + amount > daily_limit
 
 local status = 'RESERVED'
 if tx_count >= max_tx then
   status = 'RATE_LIMIT'
 elseif distinct > max_merchants then
   status = 'CROSS_MERCHANT_BURST'
-elseif committed + reserved + amount > daily_limit then
+elseif exceeds_daily_limit and not allow_daily_override then
   status = 'DAILY_LIMIT'
 end
 
@@ -363,7 +358,8 @@ local result = {
   transactions_last_minute = tx_count,
   distinct_merchants = #merchant_domains,
   merchant_domains = merchant_domains,
-  replayed = false
+  replayed = false,
+  daily_limit_overridden = exceeds_daily_limit and allow_daily_override
 }
 
 if status == 'RESERVED' then
@@ -378,7 +374,8 @@ if status == 'RESERVED' then
     currency = currency,
     status = 'RESERVED',
     reserved_at = now,
-    expires_at = expires_at
+    expires_at = expires_at,
+    daily_limit_overridden = exceeds_daily_limit and allow_daily_override
   })
   redis.call('SET', KEYS[5], detail, 'PX', rolling_window + reservation_ttl)
   result.reservation_id = reservation_id
