@@ -20,7 +20,7 @@ The current branch contains the policy kernel plus the ACP proxy, payment-reconc
 12. **Durable payment outcome** — before payment dispatch, Mino persists a PostgreSQL `PaymentOutcome` and extends the Redis reservation from its short authorization TTL into a reconciliation hold.
 13. **Reconciliation-safe completion** — merchant 2xx commits spend; clearly definitive 4xx releases it. Transport loss, 409/422, and 5xx are treated as unknown outcomes and keep allowance reserved. Same-idempotency retries reconcile from the merchant-authoritative CheckoutSession and never blindly send a second payment.
 14. **Autonomous reconciliation** — unresolved `UNKNOWN` outcomes and stale `FORWARDING` rows are leased from PostgreSQL with `FOR UPDATE SKIP LOCKED`, refreshed in Redis, queried from merchant-authoritative state using server-side credentials, and retried with exponential backoff without depending on an agent retry.
-15. **Tamper-evident audit ledger** — sanitized gateway decisions are persisted in a per-organization SHA-256 hash chain with organization-local sequence numbers and Ed25519 signatures. Concurrent writers are serialized in PostgreSQL, signing-key rotation is supported, and verification detects mutation, reordering, chain gaps, and invalid signatures.
+15. **Tamper-evident audit ledger** — sanitized gateway decisions are persisted in a per-organization SHA-256 hash chain with organization-local sequence numbers and Ed25519 signatures. Concurrent writers serialize through a locked per-organization `AuditChainHead` row, signing-key rotation is supported, and verification detects mutation, reordering, chain gaps, and invalid signatures.
 16. **External audit checkpoints** — Mino can issue a signed checkpoint of an organization's current audit-chain head. Retaining that checkpoint outside the same mutable database provides an anchor that detects truncation of the newest ledger suffix.
 
 ## ACP trust boundary
@@ -57,11 +57,12 @@ The ACP request body remains protocol-compatible. Mino-specific delegation and a
 ## Audit-integrity invariants
 
 - The PostgreSQL audit sink repeats sensitive-field redaction defensively before hashing and persistence, even though the proxy already redacts its audit payloads.
-- Every organization has an independent monotonic audit sequence. Concurrent writers take a transaction-scoped PostgreSQL advisory lock, and `(organizationId, chainSequence)` is unique, preventing two legitimate writers from creating competing chain entries.
+- Every organization has an independent monotonic audit sequence. Concurrent writers lock the organization's single `AuditChainHead` row with `SELECT ... FOR UPDATE` inside the same transaction that inserts the audit row and advances the head. `(organizationId, chainSequence)` is also unique, preventing competing legitimate next entries.
+- The `AuditChainHead` row is mutable operational serialization state, not an independent integrity anchor.
 - The signed event digest covers the persisted payloads, decision snapshot, queryable verdict/reason/policy/latency fields, merchant identity, request digest, reservation reference, upstream status, and other audit context.
 - Each row stores its previous chain digest and is signed with Ed25519. Historical verification resolves the row's `signingKeyId`, so signing keys may rotate without invalidating older entries.
 - Internal mutation, reordering, middle deletion, sequence gaps, changed chain links, and signature corruption are detectable.
-- A database-local hash chain cannot by itself prove that a privileged attacker deleted only the newest suffix and then stopped. A signed checkpoint retained outside PostgreSQL (for example in independent object storage, a compliance archive, or another trust domain) anchors a known chain head and makes that truncation detectable.
+- A database-local hash chain cannot by itself prove that a privileged attacker deleted the newest suffix and rewrote the mutable local head to the remaining prefix. A signed checkpoint retained outside PostgreSQL (for example in independent object storage, a compliance archive, or another trust domain) anchors a known chain head and makes that truncation detectable.
 - The ledger is therefore described as **tamper-evident**, not as magically immutable against a database superuser. See `docs/audit-integrity.md`.
 
 ## Policy evaluator invariants
