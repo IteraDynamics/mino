@@ -4,7 +4,7 @@ Mino is a policy, authorization, approval, and security control plane for agenti
 
 ## Implemented MVP security path
 
-The current branch contains the policy kernel plus the ACP proxy, payment-reconciliation, autonomous reconciliation, durable human-approval, tamper-evident audit, and production-application wiring slices:
+The current branch contains the policy kernel plus the ACP proxy, payment-reconciliation, autonomous reconciliation, durable human-approval, durable approval-notification delivery, tamper-evident audit, and production-application wiring slices:
 
 1. **Spend mandate** — Mino issues/verifies compact Ed25519-signed mandate tokens. The bearer token only carries identity/delegation references; the immutable server-side mandate snapshot remains authoritative and raw token values are never persisted.
 2. **Agent identity proof** — payment-facing requests carry an Ed25519 request signature bound to method, path, timestamp, nonce, mandate-token JTI digest, ACP version, idempotency key, and canonical body digest. Nonces are claimed in Redis to reject replay.
@@ -12,7 +12,7 @@ The current branch contains the policy kernel plus the ACP proxy, payment-reconc
 4. **ACP adapter** — Mino is pinned to the current stable ACP checkout snapshot (`API-Version: 2026-04-17`). It normalizes merchant-authoritative `CheckoutSession` state into a protocol-independent `CheckoutIntent`.
 5. **Policy evaluation** — identity, merchant, category, currency, per-transaction limits, rolling daily allowance, velocity, and cross-merchant burst policy are evaluated with fail-closed semantics.
 6. **Atomic authorization reservation** — Redis Lua performs idempotency, machine-velocity, cross-merchant burst, rolling-spend, and allowance reservation checks atomically in a mandate-local Redis Cluster hash slot.
-7. **Durable human approval** — an approvable soft spend-limit decision is persisted as a PostgreSQL `ApprovalRequest` before notification. The request is bound to organization, user, agent, mandate, policy version, idempotency key, raw payment-request digest, merchant, amount, reviewed reasons, merchant-authoritative checkout snapshot, and relevant spend snapshot.
+7. **Durable human approval** — an approvable soft spend-limit decision is persisted as a PostgreSQL `ApprovalRequest`. The request is bound to organization, user, agent, mandate, policy version, idempotency key, raw payment-request digest, merchant, amount, reviewed reasons, merchant-authoritative checkout snapshot, and relevant spend snapshot.
 8. **Concurrency-safe approval votes** — votes are normalized in PostgreSQL with one vote per approver. Resolution holds an `ApprovalRequest` row lock, making dual approval, rejection, duplicate votes, and expiration deterministic under concurrency.
 9. **Authenticated approval bridge** — approval read/vote callbacks require a timestamped HMAC-SHA256 signature bound to method, exact path, approver identity, and canonical request-body digest. A caller cannot become an approver merely by supplying a header.
 10. **Approval revalidation** — an approved retry refetches merchant-authoritative checkout state and re-runs policy plus Redis machine controls. The grant can cover only the same reviewed transaction/daily spend-limit breach; changed payload/cart/amount/policy, new escalation reasons, increased daily exposure, rejection, or expiry fails closed. Hard blocks are never human-overridable.
@@ -23,6 +23,7 @@ The current branch contains the policy kernel plus the ACP proxy, payment-reconc
 15. **Tamper-evident audit ledger** — sanitized gateway decisions are persisted in a per-organization SHA-256 hash chain with organization-local sequence numbers and Ed25519 signatures. Concurrent writers serialize through a locked per-organization `AuditChainHead` row, signing-key rotation is supported, and verification detects mutation, reordering, chain gaps, and invalid signatures.
 16. **External audit checkpoints** — Mino can issue a signed checkpoint of an organization's current audit-chain head. Retaining that checkpoint outside the same mutable database provides an anchor that detects truncation of the newest ledger suffix.
 17. **Production application composition** — a concrete composition root now connects PostgreSQL, Prisma, Redis, repositories, key providers, policy evaluation, reservations, approvals, payment outcomes, audit, ACP forwarding, delegation assertions, and the reconciliation worker into one runnable Fastify service. Startup validates critical dependencies and security configuration, `/readyz` checks data-plane readiness, and shutdown closes application resources cleanly.
+18. **Durable approval notification delivery** — the persisted `ApprovalRequest` itself is the durable outbox signal, so the request path does not depend on an approval webhook being online. A PostgreSQL-backed worker leases pending deliveries with `FOR UPDATE SKIP LOCKED`, retries failures with bounded exponential backoff, records only sanitized error codes, dead-letters exhausted/expired work, and reuses the stable approval-request ID as the event ID for at-least-once downstream deduplication.
 
 ## ACP trust boundary
 
@@ -47,7 +48,9 @@ The ACP request body remains protocol-compatible. Mino-specific delegation and a
 
 ## Human approval invariants
 
-- Approval state exists durably before the notification webhook is attempted. Notification delivery is therefore recoverable and may be treated as at-least-once using the stable approval-request/event ID.
+- Creating a durable `ApprovalRequest` also creates the durable need to notify a human; production payment requests do not call the external approval webhook inline. Delivery is at-least-once using the stable approval-request/event ID, and downstream approval bridges must deduplicate that ID.
+- Notification workers use PostgreSQL row locks plus expiring leases so multiple Mino instances can process the same outbox safely. A crash after an external webhook accepts an event but before Mino marks it delivered may cause the same stable event to be resent; Mino does not claim exactly-once webhook delivery.
+- Failed notification attempts persist only bounded internal error codes, never raw webhook exception text or response secrets. Retries back off, exhausted deliveries become dead-lettered, and approvals that expire before useful delivery are expired rather than notified late.
 - A reused organization/idempotency key with a changed raw request digest is a conflict.
 - `DUAL_SIGNATURE_SLACK` requires two distinct approver identities. The same approver/same decision is idempotent; changing a prior vote is rejected.
 - Any `REJECT` vote terminally rejects the request. Expired requests cannot accept late votes.
@@ -78,6 +81,8 @@ npm start
 ```
 
 Production startup fails closed when required data stores, keys, or security configuration are unavailable or malformed. `GET /healthz` is process liveness; `GET /readyz` checks PostgreSQL, Prisma, and Redis connectivity before reporting the service ready for transaction traffic. `SIGTERM` and `SIGINT` trigger an idempotent graceful shutdown.
+
+The server runs approval-notification outbox delivery independently from transaction handling on a non-overlapping polling loop. PostgreSQL leases make that delivery work safe to claim across multiple Mino instances; transient failures are retried without failing the original pending-approval response. Continuous scheduling of the payment reconciliation worker and operational alerting for unresolved outcomes remain separate production work.
 
 Private signing keys and merchant reconciliation credentials are supplied from deployment configuration, not persisted in Mino's transactional tables. The current environment-backed provider is a concrete composition boundary; managed vault/KMS integration remains production operations work. See `docs/production-runtime.md`.
 
@@ -125,7 +130,6 @@ npm run test:integration
 
 ## Next implementation slice
 
-- Add a durable notification outbox so approval webhook delivery can retry independently of the payment request path.
 - Add a continuously scheduled process/loop around the background payment reconciler and operational alerting for unresolved outcomes.
 - Add managed secret-vault/KMS integration and operational key-rotation procedures.
 - Add operational export/retention for signed audit checkpoints in a separate trust domain.
