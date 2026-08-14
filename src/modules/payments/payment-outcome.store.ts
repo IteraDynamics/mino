@@ -36,6 +36,10 @@ export interface PaymentOutcomeRecord {
   readonly forwardedAt?: Date;
   readonly resolvedAt?: Date;
   readonly lastReconciledAt?: Date;
+  readonly reconcileAttempts: number;
+  readonly nextReconcileAt?: Date;
+  readonly reconciliationLeaseOwner?: string;
+  readonly reconciliationLeaseExpiresAt?: Date;
 }
 
 export interface BeginPaymentOutcomeInput {
@@ -66,6 +70,22 @@ export interface BeginPaymentOutcomeResult {
   readonly outcome: PaymentOutcomeRecord;
 }
 
+export interface ClaimPaymentOutcomesInput {
+  readonly workerId: string;
+  readonly now: Date;
+  readonly limit: number;
+  readonly leaseMs: number;
+  readonly forwardingGraceMs: number;
+}
+
+export interface DeferPaymentOutcomeInput {
+  readonly workerId: string;
+  readonly now: Date;
+  readonly nextAttemptAt: Date;
+  readonly errorCode: string;
+  readonly upstreamStatus?: number;
+}
+
 export interface PaymentOutcomeStore {
   getByIdempotency(
     organizationId: string,
@@ -87,6 +107,14 @@ export interface PaymentOutcomeStore {
     now: Date,
   ): Promise<PaymentOutcomeRecord>;
   markReconciled(outcomeId: string, now: Date): Promise<PaymentOutcomeRecord>;
+}
+
+export interface ReconciliationPaymentOutcomeStore extends PaymentOutcomeStore {
+  claimForReconciliation(input: ClaimPaymentOutcomesInput): Promise<PaymentOutcomeRecord[]>;
+  deferReconciliation(
+    outcomeId: string,
+    input: DeferPaymentOutcomeInput,
+  ): Promise<PaymentOutcomeRecord>;
 }
 
 export interface SqlClient {
@@ -120,9 +148,13 @@ interface PaymentOutcomeRow extends QueryResultRow {
   forwardedAt: Date | null;
   resolvedAt: Date | null;
   lastReconciledAt: Date | null;
+  reconcileAttempts: number;
+  nextReconcileAt: Date | null;
+  reconciliationLeaseOwner: string | null;
+  reconciliationLeaseExpiresAt: Date | null;
 }
 
-export class PostgresPaymentOutcomeStore implements PaymentOutcomeStore {
+export class PostgresPaymentOutcomeStore implements ReconciliationPaymentOutcomeStore {
   public constructor(private readonly sql: SqlClient) {}
 
   public async getByIdempotency(
@@ -199,6 +231,9 @@ export class PostgresPaymentOutcomeStore implements PaymentOutcomeStore {
           set "status" = 'UNKNOWN',
               "upstreamStatus" = coalesce($2, "upstreamStatus"),
               "lastErrorCode" = $3,
+              "nextReconcileAt" = $4,
+              "reconciliationLeaseOwner" = null,
+              "reconciliationLeaseExpiresAt" = null,
               "updatedAt" = $4
         where "id" = $1::uuid
           and "status" in ('FORWARDING', 'UNKNOWN')
@@ -221,6 +256,10 @@ export class PostgresPaymentOutcomeStore implements PaymentOutcomeStore {
               "responseHeaders" = $4::jsonb,
               "lastErrorCode" = null,
               "resolvedAt" = coalesce("resolvedAt", $5),
+              "lastReconciledAt" = $5,
+              "nextReconcileAt" = null,
+              "reconciliationLeaseOwner" = null,
+              "reconciliationLeaseExpiresAt" = null,
               "updatedAt" = $5
         where "id" = $1::uuid
           and "status" in ('FORWARDING', 'UNKNOWN', 'SUCCEEDED')
@@ -249,6 +288,10 @@ export class PostgresPaymentOutcomeStore implements PaymentOutcomeStore {
               "responseHeaders" = $4::jsonb,
               "lastErrorCode" = null,
               "resolvedAt" = coalesce("resolvedAt", $5),
+              "lastReconciledAt" = $5,
+              "nextReconcileAt" = null,
+              "reconciliationLeaseOwner" = null,
+              "reconciliationLeaseExpiresAt" = null,
               "updatedAt" = $5
         where "id" = $1::uuid
           and "status" in ('FORWARDING', 'UNKNOWN', 'FAILED_DEFINITIVE')
@@ -272,6 +315,89 @@ export class PostgresPaymentOutcomeStore implements PaymentOutcomeStore {
         where "id" = $1::uuid
       returning *`,
       [outcomeId, now],
+      outcomeId,
+    );
+  }
+
+  public async claimForReconciliation(
+    input: ClaimPaymentOutcomesInput,
+  ): Promise<PaymentOutcomeRecord[]> {
+    if (!input.workerId.trim()) {
+      throw new Error("Reconciliation worker ID is required");
+    }
+    if (!Number.isSafeInteger(input.limit) || input.limit <= 0 || input.limit > 1000) {
+      throw new Error("Reconciliation claim limit must be between 1 and 1000");
+    }
+    if (!Number.isSafeInteger(input.leaseMs) || input.leaseMs <= 0) {
+      throw new Error("Reconciliation lease must be a positive integer number of milliseconds");
+    }
+    if (!Number.isSafeInteger(input.forwardingGraceMs) || input.forwardingGraceMs < 0) {
+      throw new Error("Forwarding grace must be a non-negative integer number of milliseconds");
+    }
+
+    const staleForwardingBefore = new Date(input.now.getTime() - input.forwardingGraceMs);
+    const leaseExpiresAt = new Date(input.now.getTime() + input.leaseMs);
+    const result = await this.sql.query<PaymentOutcomeRow>(
+      `with candidates as (
+         select "id"
+           from "PaymentOutcome"
+          where "status" in ('UNKNOWN', 'FORWARDING')
+            and (
+              ("status" = 'UNKNOWN' and ("nextReconcileAt" is null or "nextReconcileAt" <= $1))
+              or ("status" = 'FORWARDING' and "updatedAt" <= $2)
+            )
+            and (
+              "reconciliationLeaseExpiresAt" is null
+              or "reconciliationLeaseExpiresAt" <= $1
+            )
+          order by coalesce("nextReconcileAt", "updatedAt"), "createdAt", "id"
+          for update skip locked
+          limit $3::int
+       )
+       update "PaymentOutcome" as outcome
+          set "reconciliationLeaseOwner" = $4,
+              "reconciliationLeaseExpiresAt" = $5,
+              "reconcileAttempts" = "reconcileAttempts" + 1,
+              "lastReconciledAt" = $1,
+              "updatedAt" = $1
+         from candidates
+        where outcome."id" = candidates."id"
+      returning outcome.*`,
+      [input.now, staleForwardingBefore, input.limit, input.workerId, leaseExpiresAt],
+    );
+
+    return result.rows.map(mapRow);
+  }
+
+  public async deferReconciliation(
+    outcomeId: string,
+    input: DeferPaymentOutcomeInput,
+  ): Promise<PaymentOutcomeRecord> {
+    if (input.nextAttemptAt.getTime() <= input.now.getTime()) {
+      throw new Error("Deferred reconciliation must be scheduled in the future");
+    }
+    return this.updateOne(
+      `update "PaymentOutcome"
+          set "status" = 'UNKNOWN',
+              "upstreamStatus" = coalesce($3, "upstreamStatus"),
+              "lastErrorCode" = $4,
+              "nextReconcileAt" = $5,
+              "lastReconciledAt" = $2,
+              "reconciliationLeaseOwner" = null,
+              "reconciliationLeaseExpiresAt" = null,
+              "updatedAt" = $2
+        where "id" = $1::uuid
+          and "status" in ('FORWARDING', 'UNKNOWN')
+          and "reconciliationLeaseOwner" = $6
+      returning *`,
+      [
+        outcomeId,
+        input.now,
+        input.upstreamStatus ?? null,
+        input.errorCode,
+        input.nextAttemptAt,
+        input.workerId,
+      ],
       outcomeId,
     );
   }
@@ -323,6 +449,14 @@ function mapRow(row: PaymentOutcomeRow): PaymentOutcomeRecord {
     ...(row.forwardedAt ? { forwardedAt: row.forwardedAt } : {}),
     ...(row.resolvedAt ? { resolvedAt: row.resolvedAt } : {}),
     ...(row.lastReconciledAt ? { lastReconciledAt: row.lastReconciledAt } : {}),
+    reconcileAttempts: row.reconcileAttempts,
+    ...(row.nextReconcileAt ? { nextReconcileAt: row.nextReconcileAt } : {}),
+    ...(row.reconciliationLeaseOwner
+      ? { reconciliationLeaseOwner: row.reconciliationLeaseOwner }
+      : {}),
+    ...(row.reconciliationLeaseExpiresAt
+      ? { reconciliationLeaseExpiresAt: row.reconciliationLeaseExpiresAt }
+      : {}),
   };
 }
 
