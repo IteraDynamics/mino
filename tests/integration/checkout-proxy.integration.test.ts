@@ -17,6 +17,7 @@ import { PolicyEvaluator } from "../../src/modules/policy/policy-evaluator.js";
 import { ACPAdapter } from "../../src/modules/proxy/acp-adapter.js";
 import {
   CheckoutProxyService,
+  IdempotencyConflictError,
   PaymentOutcomePendingError,
   type CompleteCheckoutProxyInput,
 } from "../../src/modules/proxy/checkout-proxy.service.js";
@@ -265,7 +266,8 @@ integration("CheckoutProxyService with real Redis reservation state", () => {
       baseUrl: "https://merchant.example",
       active: true,
     };
-    let authoritativeSession = args.session ?? checkoutSession();
+    let authoritativeSession: ReturnType<typeof checkoutSession> & { order?: unknown } =
+      args.session ?? checkoutSession();
     let completeCalls = 0;
     let approvalEvents = 0;
     const audits: unknown[] = [];
@@ -441,6 +443,18 @@ integration("CheckoutProxyService with real Redis reservation state", () => {
     expect(second.replayed).toBe(true);
     expect(h.state().completeCalls).toBe(1);
     expect(await redis.zCard(`mino:v1:auth:{${h.mandate.id}}:committed`)).toBe(1);
+  });
+
+  it("rejects reuse of an idempotency key when only the sensitive payment payload changes", async () => {
+    const h = buildHarness({ session: checkoutSession(5_000) });
+    const key = "idem-sensitive-conflict";
+
+    await h.proxy.completeCheckout(h.input({ payment_data: { token: "token-a" } }, key));
+
+    await expect(
+      h.proxy.completeCheckout(h.input({ payment_data: { token: "token-b" } }, key)),
+    ).rejects.toBeInstanceOf(IdempotencyConflictError);
+    expect(h.state().completeCalls).toBe(1);
   });
 
   it("releases real Redis allowance for a definitive merchant 4xx failure", async () => {
