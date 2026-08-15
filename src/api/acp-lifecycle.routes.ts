@@ -35,7 +35,7 @@ export async function registerACPLifecycleRoutes(
     async (request, reply) => {
       const requestId = request.id;
       const path = request.url.split("?")[0] ?? request.url;
-      const body = {};
+      const body = null;
       try {
         const result = await deps.lifecycleProxy.retrieveCheckout({
           merchantId: request.params.merchantId,
