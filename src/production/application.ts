@@ -56,6 +56,7 @@ import {
 import { StaticMerchantCredentialProvider } from "../infrastructure/merchant/static-merchant-credential-provider.js";
 import { PgSqlAdapter } from "../infrastructure/postgres/pg-sql-adapter.js";
 import { PrismaAdminAuthorizationContextRepository } from "../infrastructure/prisma/admin-authorization.repository.js";
+import { PrismaAdminInventoryRepository } from "../infrastructure/prisma/admin-inventory.repository.js";
 import {
   PrismaAgentVerificationKeyResolver,
   PrismaMandateRepository,
@@ -96,6 +97,7 @@ export interface ProductionApplication {
     readonly policies: PrismaPolicyRepository;
     readonly agentKeys: PrismaAgentVerificationKeyResolver;
     readonly adminAuthorization: PrismaAdminAuthorizationContextRepository;
+    readonly adminInventory: PrismaAdminInventoryRepository;
   };
   readiness(): Promise<boolean>;
   close(): Promise<void>;
@@ -134,6 +136,7 @@ export async function createProductionApplication(
     const policies = new PrismaPolicyRepository(prisma);
     const agentKeys = new PrismaAgentVerificationKeyResolver(prisma);
     const adminAuthorization = new PrismaAdminAuthorizationContextRepository(prisma);
+    const adminInventory = new PrismaAdminInventoryRepository(prisma);
     const adminAccess = overrides.adminJwtIssuers?.length
       ? {
           authenticator: new AdminJwtAuthenticator(overrides.adminJwtIssuers, clock),
@@ -239,7 +242,15 @@ export async function createProductionApplication(
       ...(lifecycleProxy ? { lifecycleProxy } : {}),
       approvals,
       approvalAuthenticator,
-      ...(adminAccess ? { adminAccess } : {}),
+      ...(adminAccess
+        ? {
+            adminAccess,
+            adminInventory: {
+              ...adminAccess,
+              inventory: adminInventory,
+            },
+          }
+        : {}),
       ...(operationalMetrics && overrides.operationalMetrics
         ? {
             metrics: {
@@ -293,7 +304,14 @@ export async function createProductionApplication(
       authorizationStateReconstructor,
       auditVerifier,
       ...(adminAccess ? { adminAccess } : {}),
-      repositories: { mandates, merchants, policies, agentKeys, adminAuthorization },
+      repositories: {
+        mandates,
+        merchants,
+        policies,
+        agentKeys,
+        adminAuthorization,
+        adminInventory,
+      },
       readiness,
       async close(): Promise<void> {
         if (closed) {
