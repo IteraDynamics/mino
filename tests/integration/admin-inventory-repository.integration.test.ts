@@ -119,10 +119,14 @@ integration("Prisma admin inventory repository", () => {
     expect(JSON.stringify(first)).not.toContain("SECRET-PUBLIC-KEY-MATERIAL");
     expect(JSON.stringify(first)).not.toContain("publicKey");
 
+    const nextCursor = first.nextCursor;
+    if (!nextCursor) {
+      throw new Error("Expected a next cursor for the first agent inventory page");
+    }
     const second = await repository.listAgents({
       organizationId,
       limit: 2,
-      cursor: first.nextCursor,
+      cursor: nextCursor,
     });
     expect(second.items.map((item) => item.externalAgentId)).toEqual(["agent-c"]);
     expect(second.nextCursor).toBeUndefined();
