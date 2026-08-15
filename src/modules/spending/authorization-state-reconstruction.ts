@@ -5,9 +5,12 @@ import type {
   ReservationAttemptResult,
   RedisScriptClient,
 } from "./authorization-reservation.service.js";
+import { ReservationStatus } from "./authorization-reservation.service.js";
+import type { DurableSpendReservationStore } from "./postgres-spend-reservation.store.js";
 
 const MAX_SAFE_MINOR_UNITS = BigInt(Number.MAX_SAFE_INTEGER);
 const DEFAULT_ROLLING_WINDOW_MS = 24 * 60 * 60 * 1000;
+const DEFAULT_RESERVATION_TTL_MS = 5 * 60 * 1000;
 const DEFAULT_RECONCILIATION_HOLD_MS = 26 * 60 * 60 * 1000;
 const DEFAULT_DETAIL_TTL_MS = 50 * 60 * 60 * 1000;
 const MIN_VELOCITY_WINDOW_MS = 60_000;
@@ -38,12 +41,12 @@ interface MandateRow extends QueryResultRow {
   crossMerchantWindowSecs: number;
 }
 
-interface PaymentStateRow extends QueryResultRow {
+interface DurableMoneyRow extends QueryResultRow {
   reservationId: string;
   amountMinor: string;
   currency: string;
-  status: "FORWARDING" | "UNKNOWN" | "SUCCEEDED";
-  resolvedAt: Date | null;
+  stateKind: "COMMITTED" | "RESERVED";
+  eventAt: Date | null;
 }
 
 interface AttemptRow extends QueryResultRow {
@@ -82,10 +85,10 @@ export class AuthorizationStateUnavailableError extends Error {
  * durable PostgreSQL facts. The per-mandate ready marker is written only after
  * the entire reconstruction script completes atomically.
  *
- * PaymentOutcome is authoritative for money that crossed the merchant-dispatch
- * boundary. Recent AuditLog and PaymentOutcome rows restore machine-attempt
- * velocity. Redis remains the fast enforcement layer; PostgreSQL is the recovery
- * source after a cold Redis loss.
+ * SpendReservation closes the pre-dispatch reservation gap for new requests.
+ * PaymentOutcome remains a recovery fallback for legacy rows and is authoritative
+ * for unresolved or succeeded payments that crossed the merchant-dispatch boundary.
+ * Recent AuditLog and PaymentOutcome rows restore machine-attempt velocity.
  */
 export class RedisAuthorizationStateReconstructor {
   private readonly rollingWindowMs: number;
@@ -113,6 +116,11 @@ export class RedisAuthorizationStateReconstructor {
          from "AgentMandate"
         where "status" = 'ACTIVE'
           and "expiresAt" > $1
+       union
+       select distinct "mandateId"::text as "mandateId"
+         from "SpendReservation"
+        where ("status" = 'RESERVED' and "expiresAt" > $1)
+           or ("status" = 'COMMITTED' and "committedAt" >= $2)
        union
        select distinct "mandateId"::text as "mandateId"
          from "PaymentOutcome"
@@ -193,21 +201,57 @@ export class RedisAuthorizationStateReconstructor {
     );
     const attemptCutoff = new Date(now.getTime() - attemptWindowMs);
 
-    const [paymentStatesResult, attemptsResult] = await Promise.all([
-      this.sql.query<PaymentStateRow>(
-        `select "reservationId",
-                "amountMinor"::text as "amountMinor",
-                "currency",
-                "status",
-                "resolvedAt"
-           from "PaymentOutcome"
-          where "mandateId" = $1::uuid
-            and (
-              "status" in ('FORWARDING', 'UNKNOWN')
-              or ("status" = 'SUCCEEDED' and "resolvedAt" >= $2)
+    const [moneyResult, attemptsResult] = await Promise.all([
+      this.sql.query<DurableMoneyRow>(
+        `select s."id"::text as "reservationId",
+                s."amountMinor"::text as "amountMinor",
+                s."currency",
+                'COMMITTED'::text as "stateKind",
+                s."committedAt" as "eventAt"
+           from "SpendReservation" s
+          where s."mandateId" = $1::uuid
+            and s."status" = 'COMMITTED'
+            and s."committedAt" >= $2
+         union all
+         select s."id"::text as "reservationId",
+                s."amountMinor"::text as "amountMinor",
+                s."currency",
+                'RESERVED'::text as "stateKind",
+                s."expiresAt" as "eventAt"
+           from "SpendReservation" s
+          where s."mandateId" = $1::uuid
+            and s."status" = 'RESERVED'
+            and s."expiresAt" > $3
+            and not exists (
+              select 1 from "PaymentOutcome" p
+               where p."reservationId" = s."id"::text
             )
-          order by "reservationId"`,
-        [mandateId, rollingCutoff],
+         union all
+         select p."reservationId",
+                p."amountMinor"::text as "amountMinor",
+                p."currency",
+                'RESERVED'::text as "stateKind",
+                null::timestamptz as "eventAt"
+           from "PaymentOutcome" p
+          where p."mandateId" = $1::uuid
+            and p."status" in ('FORWARDING', 'UNKNOWN')
+         union all
+         select p."reservationId",
+                p."amountMinor"::text as "amountMinor",
+                p."currency",
+                'COMMITTED'::text as "stateKind",
+                p."resolvedAt" as "eventAt"
+           from "PaymentOutcome" p
+          where p."mandateId" = $1::uuid
+            and p."status" = 'SUCCEEDED'
+            and p."resolvedAt" >= $2
+            and not exists (
+              select 1 from "SpendReservation" s
+               where s."id"::text = p."reservationId"
+                 and s."status" = 'COMMITTED'
+                 and s."committedAt" >= $2
+            )`,
+        [mandateId, rollingCutoff, now],
       ),
       this.sql.query<AttemptRow>(
         `select "merchantDomain",
@@ -243,12 +287,19 @@ export class RedisAuthorizationStateReconstructor {
       ),
     ]);
 
-    const states: RestorableState[] = paymentStatesResult.rows.map((row) => {
+    const seenReservations = new Set<string>();
+    const states: RestorableState[] = moneyResult.rows.map((row) => {
+      if (seenReservations.has(row.reservationId)) {
+        throw new AuthorizationStateUnavailableError(
+          `Durable authorization history contains conflicting state for reservation ${row.reservationId}`,
+        );
+      }
+      seenReservations.add(row.reservationId);
       const amountMinor = assertRedisSafeAmount(row.amountMinor, row.reservationId);
-      if (row.status === "SUCCEEDED") {
-        if (!row.resolvedAt) {
+      if (row.stateKind === "COMMITTED") {
+        if (!row.eventAt) {
           throw new AuthorizationStateUnavailableError(
-            `Succeeded payment reservation ${row.reservationId} is missing resolvedAt`,
+            `Committed reservation ${row.reservationId} is missing its commit timestamp`,
           );
         }
         return {
@@ -256,7 +307,7 @@ export class RedisAuthorizationStateReconstructor {
           reservationId: row.reservationId,
           amountMinor,
           currency: row.currency.toUpperCase(),
-          eventAt: row.resolvedAt.getTime(),
+          eventAt: row.eventAt.getTime(),
         };
       }
       return {
@@ -264,7 +315,7 @@ export class RedisAuthorizationStateReconstructor {
         reservationId: row.reservationId,
         amountMinor,
         currency: row.currency.toUpperCase(),
-        eventAt: now.getTime() + this.reconciliationHoldMs,
+        eventAt: row.eventAt?.getTime() ?? now.getTime() + this.reconciliationHoldMs,
       };
     });
 
@@ -325,23 +376,63 @@ export class RedisAuthorizationStateReconstructor {
 }
 
 /**
- * Guards every production reservation lifecycle operation with the durable-state
- * recovery marker. A full Redis loss removes the marker; the next operation
- * reconstructs before it can authorize or finalize spend.
+ * Production reservation boundary. It combines Redis's atomic enforcement with
+ * a PostgreSQL reservation mirror and a per-mandate reconstruction guard.
  */
 export class ReconstructingAuthorizationReservations implements AuthorizationReservations {
   public constructor(
     private readonly inner: AuthorizationReservations,
     private readonly reconstructor: RedisAuthorizationStateReconstructor,
     private readonly clock: () => Date = () => new Date(),
+    private readonly durableReservations?: DurableSpendReservationStore,
   ) {}
 
   public async tryReserve(input: ReservationAttemptInput): Promise<ReservationAttemptResult> {
-    return this.guard(input.mandate.id, input.now, () => this.inner.tryReserve(input));
+    await this.reconstructor.ensureMandateReady(input.mandate.id, input.now);
+    const result = await this.inner.tryReserve(input);
+
+    if (result.status === ReservationStatus.RESERVED && result.reservationId) {
+      if (this.durableReservations) {
+        try {
+          await this.durableReservations.recordReserved({
+            id: result.reservationId,
+            organizationId: input.mandate.organizationId,
+            userId: input.mandate.userId,
+            agentId: input.mandate.agentId,
+            mandateId: input.mandate.id,
+            idempotencyKey: input.idempotencyKey,
+            merchantDomain: input.merchantDomain,
+            currency: input.amount.currency,
+            amountMinor: input.amount.minorUnits,
+            reservedAt: input.now,
+            expiresAt: new Date(input.now.getTime() + DEFAULT_RESERVATION_TTL_MS),
+          });
+        } catch (error) {
+          await this.inner.release(input.mandate.id, result.reservationId).catch(() => undefined);
+          throw error;
+        }
+      }
+
+      if (!(await this.reconstructor.isMandateReady(input.mandate.id))) {
+        if (this.durableReservations) {
+          await this.durableReservations.markReleased(result.reservationId, input.now).catch(() => undefined);
+        }
+        throw new AuthorizationStateUnavailableError(
+          `Redis authorization state was lost while processing mandate ${input.mandate.id}`,
+        );
+      }
+      return result;
+    }
+
+    await this.assertStillReady(input.mandate.id);
+    return result;
   }
 
   public async commit(mandateId: string, reservationId: string, now: Date): Promise<boolean> {
     await this.reconstructor.ensureMandateReady(mandateId, now);
+    if (this.durableReservations) {
+      await this.durableReservations.markCommitted(reservationId, now);
+    }
     let committed = await this.inner.commit(mandateId, reservationId, now);
     if (!committed) {
       await this.reconstructor.reconstructMandate(mandateId, now, true);
@@ -353,7 +444,13 @@ export class ReconstructingAuthorizationReservations implements AuthorizationRes
 
   public async release(mandateId: string, reservationId: string): Promise<boolean> {
     const now = this.clock();
-    return this.guard(mandateId, now, () => this.inner.release(mandateId, reservationId));
+    await this.reconstructor.ensureMandateReady(mandateId, now);
+    if (this.durableReservations) {
+      await this.durableReservations.markReleased(reservationId, now);
+    }
+    const released = await this.inner.release(mandateId, reservationId);
+    await this.assertStillReady(mandateId);
+    return released;
   }
 
   public async releaseForApproval(
@@ -362,9 +459,13 @@ export class ReconstructingAuthorizationReservations implements AuthorizationRes
     idempotencyKey: string,
   ): Promise<boolean> {
     const now = this.clock();
-    return this.guard(mandateId, now, () =>
-      this.inner.releaseForApproval(mandateId, reservationId, idempotencyKey),
-    );
+    await this.reconstructor.ensureMandateReady(mandateId, now);
+    if (this.durableReservations) {
+      await this.durableReservations.markReleased(reservationId, now);
+    }
+    const released = await this.inner.releaseForApproval(mandateId, reservationId, idempotencyKey);
+    await this.assertStillReady(mandateId);
+    return released;
   }
 
   public async holdForReconciliation(
@@ -373,6 +474,13 @@ export class ReconstructingAuthorizationReservations implements AuthorizationRes
     now: Date,
   ): Promise<boolean> {
     await this.reconstructor.ensureMandateReady(mandateId, now);
+    if (this.durableReservations) {
+      await this.durableReservations.extendHold(
+        reservationId,
+        new Date(now.getTime() + DEFAULT_RECONCILIATION_HOLD_MS),
+        now,
+      );
+    }
     let held = await this.inner.holdForReconciliation(mandateId, reservationId, now);
     if (!held) {
       await this.reconstructor.reconstructMandate(mandateId, now, true);
@@ -380,13 +488,6 @@ export class ReconstructingAuthorizationReservations implements AuthorizationRes
     }
     await this.assertStillReady(mandateId);
     return held;
-  }
-
-  private async guard<T>(mandateId: string, now: Date, operation: () => Promise<T>): Promise<T> {
-    await this.reconstructor.ensureMandateReady(mandateId, now);
-    const result = await operation();
-    await this.assertStillReady(mandateId);
-    return result;
   }
 
   private async assertStillReady(mandateId: string): Promise<void> {
@@ -437,6 +538,28 @@ local detail_ttl = tonumber(ARGV[4])
 local states = cjson.decode(ARGV[5])
 local attempts = cjson.decode(ARGV[6])
 
+for index, state in ipairs(states) do
+  local detail_key = KEYS[4 + index]
+  local amount = tonumber(state.amountMinor)
+  if not amount then
+    redis.call('DEL', KEYS[4])
+    return 'CONFLICT'
+  end
+  if state.kind == 'RESERVED' then
+    local existing_raw = redis.call('GET', detail_key)
+    if existing_raw then
+      local existing = cjson.decode(existing_raw)
+      if existing.status == 'COMMITTED' then
+        redis.call('DEL', KEYS[4])
+        return 'CONFLICT'
+      end
+    end
+  elseif state.kind ~= 'COMMITTED' then
+    redis.call('DEL', KEYS[4])
+    return 'CONFLICT'
+  end
+end
+
 redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', now - rolling_window)
 redis.call('ZREMRANGEBYSCORE', KEYS[2], '-inf', now)
 redis.call('ZREMRANGEBYSCORE', KEYS[3], '-inf', now - attempt_window)
@@ -445,9 +568,6 @@ for index, state in ipairs(states) do
   local detail_key = KEYS[4 + index]
   local member = state.reservationId .. '|' .. state.amountMinor
   local amount = tonumber(state.amountMinor)
-  if not amount then
-    return 'CONFLICT'
-  end
 
   if state.kind == 'COMMITTED' then
     redis.call('ZREM', KEYS[2], member)
@@ -462,14 +582,7 @@ for index, state in ipairs(states) do
       reconstructed = true
     })
     redis.call('SET', detail_key, detail, 'PX', detail_ttl)
-  elseif state.kind == 'RESERVED' then
-    local existing_raw = redis.call('GET', detail_key)
-    if existing_raw then
-      local existing = cjson.decode(existing_raw)
-      if existing.status == 'COMMITTED' then
-        return 'CONFLICT'
-      end
-    end
+  else
     local expires_at = tonumber(state.eventAt)
     local existing_score = redis.call('ZSCORE', KEYS[2], member)
     if existing_score and tonumber(existing_score) > expires_at then
@@ -487,8 +600,6 @@ for index, state in ipairs(states) do
       reconstructed = true
     })
     redis.call('SET', detail_key, detail, 'PX', detail_ttl)
-  else
-    return 'CONFLICT'
   end
 end
 
