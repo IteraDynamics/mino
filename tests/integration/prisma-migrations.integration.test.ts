@@ -4,7 +4,10 @@ import { Pool } from "pg";
 const integration = process.env.RUN_INTEGRATION_TESTS === "1" ? describe : describe.skip;
 const DATABASE_URL =
   process.env.DATABASE_URL ?? "postgresql://mino:mino@127.0.0.1:5432/mino?schema=public";
-const BASELINE_MIGRATION = "20260815050000_baseline";
+const EXPECTED_MIGRATIONS = [
+  "20260815050000_baseline",
+  "20260815053000_admin_identity_rbac",
+] as const;
 
 interface MigrationRow {
   migration_name: string;
@@ -24,18 +27,20 @@ integration("Prisma production migration history", () => {
     await pool.end();
   });
 
-  it("records the committed baseline as successfully applied", async () => {
+  it("records every committed production migration as successfully applied", async () => {
     const result = await pool.query<MigrationRow>(
       `select migration_name, finished_at, rolled_back_at, logs
          from "_prisma_migrations"
-        where migration_name = $1`,
-      [BASELINE_MIGRATION],
+        where migration_name = any($1::text[])
+        order by migration_name asc`,
+      [EXPECTED_MIGRATIONS],
     );
 
-    expect(result.rows).toHaveLength(1);
-    expect(result.rows[0]?.migration_name).toBe(BASELINE_MIGRATION);
-    expect(result.rows[0]?.finished_at).toBeInstanceOf(Date);
-    expect(result.rows[0]?.rolled_back_at).toBeNull();
-    expect(result.rows[0]?.logs).toBeNull();
+    expect(result.rows.map((row) => row.migration_name)).toEqual(EXPECTED_MIGRATIONS);
+    for (const row of result.rows) {
+      expect(row.finished_at).toBeInstanceOf(Date);
+      expect(row.rolled_back_at).toBeNull();
+      expect(row.logs).toBeNull();
+    }
   });
 });

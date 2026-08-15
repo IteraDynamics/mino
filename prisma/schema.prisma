@@ -64,22 +64,89 @@ enum PaymentOutcomeStatus {
   FAILED_DEFINITIVE
 }
 
+enum AdminPrincipalStatus {
+  ACTIVE
+  SUSPENDED
+  DISABLED
+}
+
+enum AdminMembershipStatus {
+  ACTIVE
+  SUSPENDED
+  REMOVED
+}
+
+enum AdminRole {
+  ORGANIZATION_OWNER
+  SECURITY_ADMIN
+  FINANCE_MANAGER
+  AGENT_MANAGER
+  APPROVER
+  AUDITOR
+}
+
 model Organization {
   id        String   @id @default(uuid()) @db.Uuid
   name      String
   createdAt DateTime @default(now()) @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @db.Timestamptz(6)
 
-  users           User[]
-  agents          AgentIdentity[]
-  policies        Policy[]
-  mandates        AgentMandate[]
-  auditLogs       AuditLog[]
-  auditChainHead  AuditChainHead?
-  approvals       ApprovalRequest[]
-  reservations    SpendReservation[]
-  merchants       MerchantEndpoint[]
-  paymentOutcomes PaymentOutcome[]
+  users            User[]
+  agents           AgentIdentity[]
+  policies         Policy[]
+  mandates         AgentMandate[]
+  auditLogs        AuditLog[]
+  auditChainHead   AuditChainHead?
+  approvals        ApprovalRequest[]
+  reservations     SpendReservation[]
+  merchants        MerchantEndpoint[]
+  paymentOutcomes  PaymentOutcome[]
+  adminMemberships AdminOrganizationMembership[]
+}
+
+model AdminPrincipal {
+  id          String               @id @default(uuid()) @db.Uuid
+  issuer      String
+  subject     String
+  email       String?
+  displayName String?
+  status      AdminPrincipalStatus @default(ACTIVE)
+  createdAt   DateTime             @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime             @updatedAt @db.Timestamptz(6)
+
+  memberships AdminOrganizationMembership[]
+
+  @@unique([issuer, subject])
+  @@index([status])
+}
+
+model AdminOrganizationMembership {
+  id             String                @id @default(uuid()) @db.Uuid
+  organizationId String                @db.Uuid
+  principalId    String                @db.Uuid
+  status         AdminMembershipStatus @default(ACTIVE)
+  createdAt      DateTime              @default(now()) @db.Timestamptz(6)
+  updatedAt      DateTime              @updatedAt @db.Timestamptz(6)
+
+  organization    Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  principal       AdminPrincipal        @relation(fields: [principalId], references: [id], onDelete: Cascade)
+  roleAssignments AdminRoleAssignment[]
+
+  @@unique([organizationId, principalId])
+  @@index([organizationId, status])
+  @@index([principalId, status])
+}
+
+model AdminRoleAssignment {
+  id           String    @id @default(uuid()) @db.Uuid
+  membershipId String    @db.Uuid
+  role         AdminRole
+  assignedAt   DateTime  @default(now()) @db.Timestamptz(6)
+
+  membership AdminOrganizationMembership @relation(fields: [membershipId], references: [id], onDelete: Cascade)
+
+  @@unique([membershipId, role])
+  @@index([role])
 }
 
 model MerchantEndpoint {

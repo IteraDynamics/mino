@@ -30,6 +30,7 @@ Mino is a policy, authorization, approval, and security control plane for agenti
 24. **Operational metrics** — an optional, separately authenticated `/metrics` endpoint exposes low-cardinality Prometheus-compatible durable-state gauges without customer or transaction IDs as labels.
 25. **Hardened container runtime** — the production image runs non-root with a healthcheck; the reference Compose deployment uses read-only application filesystems, dropped capabilities, `no-new-privileges`, private PostgreSQL/Redis networking, runtime-mounted secrets, Redis authentication, AOF persistence, and `noeviction`.
 26. **Versioned database migrations** — committed Prisma migration history is the governed production/CI schema path. A separate short-lived migration image runs `prisma migrate deploy`, and the reference application service cannot start until migration succeeds.
+27. **Administrative identity and RBAC foundation** — administrative humans are represented separately from spending-beneficiary users using stable external `(issuer, subject)` identities, organization-local memberships, durable role assignments, and a centralized fail-closed permission authorizer. Built-in role meanings are deterministic code-reviewed permission bundles rather than mutable database definitions.
 
 ## ACP trust boundary
 
@@ -59,6 +60,18 @@ GET  /metrics   # optional; dedicated Bearer credential required
 ```
 
 The ACP request body remains protocol-compatible. Mino-specific mandate and agent-proof material lives in headers. Approval bridge endpoints use separate timestamped HMAC authentication. See `openapi/mino.openapi.yaml`.
+
+The administrative RBAC foundation does **not** yet add customer-facing admin HTTP routes. Future admin endpoints must first cryptographically establish a trusted external issuer/subject and then request the narrow permission required for the exact organization and operation; an email header or single global admin API key is not an administrative identity mechanism.
+
+## Administrative authorization boundary
+
+Administrative authority is separate from agent spending authority. The existing `User` model represents a person on whose behalf an agent may spend; it does not make that person an administrator. `AdminPrincipal` represents an externally authenticated human administrative identity and is keyed by stable `(issuer, subject)`. Email and display name are metadata only.
+
+An administrator must have an `ACTIVE` organization membership before any role grant is considered. Suspended or disabled principals, missing memberships, suspended or removed memberships, organization mismatches, and missing permissions fail closed. A membership in one tenant is never substituted for another.
+
+The initial built-in roles are `ORGANIZATION_OWNER`, `SECURITY_ADMIN`, `FINANCE_MANAGER`, `AGENT_MANAGER`, `APPROVER`, and `AUDITOR`. Roles grant narrow permissions such as `agent.rotate_key`, `policy.activate`, `mandate.issue`, `approval.vote`, and `audit.verify`. Route handlers should authorize permissions rather than branching directly on role names.
+
+Separation of duties begins in the role catalog: `FINANCE_MANAGER` can administer relevant policy/mandate controls but does not automatically receive `approval.vote`; `APPROVER` can vote on human approval but does not thereby gain policy activation or mandate issuance authority. Future bounded resource scopes and four-eyes governance for especially sensitive administrative transitions are intended to layer above this deterministic RBAC substrate rather than becoming an arbitrary customer-authored ABAC expression language. See `docs/admin-authorization.md`.
 
 ## Human approval invariants
 
@@ -156,4 +169,4 @@ The GitHub verification gate additionally builds the runtime and migration conta
 
 ## Next implementation slice
 
-The next product-level slice is the **administrative control-plane authentication and authorization foundation**: organization-scoped human/admin principals and role enforcement before Mino exposes mutation APIs for agents, policies, merchants, or mandates. A single global admin API key is deliberately not the target design.
+The next product-level slice is the **cryptographically authenticated administrative request boundary plus first narrowly permissioned management APIs**. HTTP authentication must establish a trusted external issuer/subject before the centralized admin authorizer is invoked; subsequent agent, policy, merchant, mandate, membership, and audit surfaces should request explicit organization-local permissions rather than relying on a global administrator credential.
