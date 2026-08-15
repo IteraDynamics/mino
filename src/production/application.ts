@@ -35,6 +35,10 @@ import {
   type ACPMerchantClient,
 } from "../modules/proxy/merchant-client.js";
 import { AuthorizationReservationService } from "../modules/spending/authorization-reservation.service.js";
+import {
+  ReconstructingAuthorizationReservations,
+  RedisAuthorizationStateReconstructor,
+} from "../modules/spending/authorization-state-reconstruction.js";
 import type { ProductionConfig } from "../infrastructure/config/production-config.js";
 import {
   StaticAuditKeyProvider,
@@ -67,6 +71,7 @@ export interface ProductionApplication {
   readonly reconciliationMonitor: PaymentReconciliationMonitor;
   readonly approvalNotifications: ApprovalNotificationOutboxWorker;
   readonly auditCheckpointRetention?: AuditCheckpointRetentionWorker;
+  readonly authorizationStateReconstructor: RedisAuthorizationStateReconstructor;
   readonly auditVerifier: PostgresAuditVerifier;
   readonly repositories: {
     readonly mandates: PrismaMandateRepository;
@@ -83,6 +88,7 @@ export async function createProductionApplication(
   overrides: ProductionApplicationOverrides = {},
 ): Promise<ProductionApplication> {
   const generateId = overrides.generateId ?? randomUUID;
+  const clock = overrides.now ?? (() => new Date());
   const sqlPool = new Pool({
     connectionString: config.databaseUrl,
     connectionTimeoutMillis: 5_000,
@@ -118,8 +124,17 @@ export async function createProductionApplication(
       agentKeys,
       new RedisNonceReplayGuard(redis),
     );
-    const reservations = new AuthorizationReservationService(
-      new RedisAuthorizationScriptClient(redis),
+    const redisAuthorization = new RedisAuthorizationScriptClient(redis);
+    const rawReservations = new AuthorizationReservationService(redisAuthorization);
+    const authorizationStateReconstructor = new RedisAuthorizationStateReconstructor(
+      sql,
+      redisAuthorization,
+    );
+    await authorizationStateReconstructor.reconstructAll(clock());
+    const reservations = new ReconstructingAuthorizationReservations(
+      rawReservations,
+      authorizationStateReconstructor,
+      clock,
     );
     const paymentOutcomes = new PostgresPaymentOutcomeStore(sql);
 
@@ -214,6 +229,7 @@ export async function createProductionApplication(
       reconciliationMonitor,
       approvalNotifications,
       ...(auditCheckpointRetention ? { auditCheckpointRetention } : {}),
+      authorizationStateReconstructor,
       auditVerifier,
       repositories: { mandates, merchants, policies, agentKeys },
       readiness,
