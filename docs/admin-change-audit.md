@@ -58,7 +58,7 @@ Each committed change records:
 
 Before state, after state, and metadata are defensively redacted **before** canonicalization, hashing, signing, or persistence.
 
-The administrative redactor includes the existing payment/credential/card fields plus administrative secret forms such as passwords, private keys, client secrets, access tokens, refresh tokens, and bearer values. Raw JWTs are not part of the event interface.
+The administrative redactor includes the existing payment/credential/card fields plus administrative secret forms such as passwords, private keys, client secrets, access tokens, refresh tokens, and bearer values. Dates are normalized to ISO strings and bigint values to exact decimal strings before persistence. Raw JWTs are not part of the event interface.
 
 This is defense in depth. Future mutation handlers should still construct deliberately narrow audit snapshots rather than passing arbitrary request/configuration objects into the ledger.
 
@@ -77,10 +77,18 @@ This is defense in depth. Future mutation handlers should still construct delibe
 
 It detects row mutation, middle deletion/gaps, link corruption, signature corruption, and deletion of newest rows while the durable chain head remains ahead.
 
+## Independent checkpoint boundary
+
+The mutable PostgreSQL chain head is not treated as an independent trust anchor. Production also issues signed administrative chain-head checkpoints and exports them to the separately operated audit-retention boundary.
+
+A retained checkpoint lets `PostgresRetainedAdminAuditVerifier` detect a coherent database rewind where an attacker deletes the newest administrative audit rows **and** rewrites the local chain head to match the shortened database. In that case the database-only chain can still be internally valid, but it cannot agree with the previously retained signed sequence/digest.
+
+Administrative checkpoints use a separate signing domain and retention-event type from transaction audit while reusing Mino's configured audit signing keys and external HTTPS/HMAC retention credential. Delivery is at-least-once with stable event IDs; the external receiver must durably deduplicate before returning success. See `docs/admin-audit-checkpoint-retention.md`.
+
 ## Trust boundary and non-claims
 
-The ledger is **tamper-evident**, not immutable. A database superuser who can rewrite both audit rows and the mutable chain head is inside the database trust boundary. Unlike Mino's transaction audit chain, this first administrative-audit slice does not yet export signed admin-chain checkpoints to the separate retention boundary.
+The combined chain plus independent checkpoint retention is **tamper-evident**, not immutable. It provides independent evidence against unilateral PostgreSQL rewrite/truncation as long as the external retention system remains a separate trust domain and preserves accepted events.
 
-Therefore external admin-audit checkpoint retention is the natural next hardening step before or alongside high-risk administrative mutation APIs. Until that exists, do not claim independent detection of a database superuser deleting the newest admin-audit suffix and coherently rewriting the mutable head.
+An attacker who controls both Mino's database and the independently operated retention system is inside both trust boundaries. Mino therefore does not describe this as immutable or blockchain-backed audit history.
 
-The ledger also does not claim to audit denied HTTP attempts in this slice. Its immediate safety purpose is stronger and narrower: every **successful governed administrative state mutation** can be committed atomically with a signed, durable change receipt.
+The ledger also does not claim to audit denied HTTP attempts in this slice. Its immediate safety purpose is stronger and narrower: every **successful governed administrative state mutation** can be committed atomically with a signed, durable change receipt, and the resulting chain head can be independently retained outside the database.
