@@ -12,7 +12,11 @@ COPY tsconfig.json prisma.config.ts ./
 COPY prisma ./prisma
 COPY src ./src
 
-RUN npm run prisma:generate \
+# Prisma 7 loads prisma.config.ts even for client generation and therefore requires
+# DATABASE_URL to parse. This command-scoped localhost value is intentionally
+# non-secret and is never copied into the runtime image or used to connect to a DB.
+RUN DATABASE_URL=postgresql://mino:build-only@127.0.0.1:5432/mino \
+    npm run prisma:generate \
  && npm run build \
  && npm prune --omit=dev
 
