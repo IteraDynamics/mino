@@ -1,12 +1,18 @@
 import type { Pool, PoolClient, QueryResultRow } from "pg";
 import type {
+  AdminAuditSqlClient,
+  AdminAuditSqlTransaction,
+} from "../../modules/admin/admin-change-audit-ledger.js";
+import type {
   ApprovalSqlClient,
   ApprovalSqlTransaction,
 } from "../../modules/approvals/approval-request.store.js";
 import type { AuditSqlClient, AuditSqlTransaction } from "../../modules/audit/postgres-audit-ledger.js";
 import type { SqlClient } from "../../modules/payments/payment-outcome.store.js";
 
-export class PgSqlAdapter implements SqlClient, ApprovalSqlClient, AuditSqlClient {
+export class PgSqlAdapter
+  implements SqlClient, ApprovalSqlClient, AuditSqlClient, AdminAuditSqlClient
+{
   public constructor(private readonly pool: Pool) {}
 
   public async query<R extends QueryResultRow = QueryResultRow>(
@@ -17,12 +23,16 @@ export class PgSqlAdapter implements SqlClient, ApprovalSqlClient, AuditSqlClien
     return { rows: result.rows, rowCount: result.rowCount };
   }
 
-  public async connect(): Promise<ApprovalSqlTransaction & AuditSqlTransaction> {
+  public async connect(): Promise<
+    ApprovalSqlTransaction & AuditSqlTransaction & AdminAuditSqlTransaction
+  > {
     return pgTransaction(await this.pool.connect());
   }
 }
 
-function pgTransaction(client: PoolClient): ApprovalSqlTransaction & AuditSqlTransaction {
+function pgTransaction(
+  client: PoolClient,
+): ApprovalSqlTransaction & AuditSqlTransaction & AdminAuditSqlTransaction {
   return {
     async query<R extends QueryResultRow = QueryResultRow>(
       text: string,

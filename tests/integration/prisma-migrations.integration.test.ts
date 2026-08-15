@@ -7,6 +7,7 @@ const DATABASE_URL =
 const EXPECTED_MIGRATIONS = [
   "20260815050000_baseline",
   "20260815053000_admin_identity_rbac",
+  "20260815063000_admin_change_audit",
 ] as const;
 
 interface MigrationRow {

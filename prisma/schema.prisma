@@ -91,17 +91,19 @@ model Organization {
   createdAt DateTime @default(now()) @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @db.Timestamptz(6)
 
-  users            User[]
-  agents           AgentIdentity[]
-  policies         Policy[]
-  mandates         AgentMandate[]
-  auditLogs        AuditLog[]
-  auditChainHead   AuditChainHead?
-  approvals        ApprovalRequest[]
-  reservations     SpendReservation[]
-  merchants        MerchantEndpoint[]
-  paymentOutcomes  PaymentOutcome[]
-  adminMemberships AdminOrganizationMembership[]
+  users               User[]
+  agents              AgentIdentity[]
+  policies            Policy[]
+  mandates            AgentMandate[]
+  auditLogs           AuditLog[]
+  auditChainHead      AuditChainHead?
+  adminAuditLogs      AdminAuditLog[]
+  adminAuditChainHead AdminAuditChainHead?
+  approvals           ApprovalRequest[]
+  reservations        SpendReservation[]
+  merchants           MerchantEndpoint[]
+  paymentOutcomes     PaymentOutcome[]
+  adminMemberships    AdminOrganizationMembership[]
 }
 
 model AdminPrincipal {
@@ -470,4 +472,50 @@ model AuditLog {
   @@index([merchantDomain, timestamp])
   @@index([decisionId])
   @@index([requestId])
+}
+
+model AdminAuditChainHead {
+  organizationId String   @id @db.Uuid
+  chainSequence  BigInt   @default(0) @db.BigInt
+  chainDigest    String?
+  updatedAt      DateTime @default(now()) @updatedAt @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+}
+
+model AdminAuditLog {
+  id             BigInt   @id @default(autoincrement())
+  organizationId String   @db.Uuid
+  requestId      String   @db.Uuid
+  principalId    String   @db.Uuid
+  membershipId   String   @db.Uuid
+  timestamp      DateTime @default(now()) @db.Timestamptz(6)
+
+  permission   String
+  action       String
+  resourceType String
+  resourceId   String?
+  roles        String[]
+
+  beforeState Json?
+  afterState  Json?
+  metadata    Json?
+
+  requestDigest       String
+  eventDigest         String
+  chainVersion        Int    @default(1)
+  chainSequence       BigInt @db.BigInt
+  previousChainDigest String?
+  chainDigest         String
+  integritySignature String
+  signingKeyId        String
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+
+  @@unique([organizationId, chainSequence])
+  @@index([organizationId, timestamp])
+  @@index([organizationId, chainSequence])
+  @@index([principalId, timestamp])
+  @@index([requestId])
+  @@index([resourceType, resourceId, timestamp])
 }

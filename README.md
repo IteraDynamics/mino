@@ -21,8 +21,8 @@ Mino is a policy, authorization, approval, and security control plane for agenti
 15. **Reconciliation-safe completion** — merchant 2xx commits spend; clearly definitive 4xx releases it. Transport loss, 409/422, and 5xx remain unresolved and keep allowance held. Same-idempotency retries reconcile rather than blindly sending a second payment.
 16. **Autonomous payment reconciliation** — unresolved outcomes are leased with `FOR UPDATE SKIP LOCKED`, refreshed in Redis, queried from merchant-authoritative state with server-side credentials, and retried with bounded backoff.
 17. **Durable approval-notification delivery** — pending approval requests act as a PostgreSQL-backed outbox. Delivery is at-least-once with stable event IDs, leasing, bounded retry/backoff, and dead-letter behavior.
-18. **Tamper-evident audit ledger** — sanitized decisions are stored in per-organization SHA-256 chains with sequence numbers and Ed25519 signatures. Verification detects mutation, reordering, gaps, broken links, and invalid signatures.
-19. **Independent audit-checkpoint retention** — signed audit-chain heads can be exported to a separately operated HTTPS/HMAC retention bridge using deterministic event IDs for safe at-least-once delivery.
+18. **Tamper-evident transaction audit ledger** — sanitized decisions are stored in per-organization SHA-256 chains with sequence numbers and Ed25519 signatures. Verification detects mutation, reordering, gaps, broken links, and invalid signatures.
+19. **Independent transaction-audit checkpoint retention** — signed audit-chain heads can be exported to a separately operated HTTPS/HMAC retention bridge using deterministic event IDs for safe at-least-once delivery.
 20. **Managed secret inputs and audit-key rotation** — sensitive runtime inputs can come from mounted secret files. Startup validates Ed25519 key material and preserves historical audit public keys across controlled rotation.
 21. **Redis cold-loss reconstruction** — complete Redis loss is detectable through a per-mandate reconstruction marker. Mino rebuilds recent committed spend, active reservations, unresolved-payment holds, and velocity facts from durable PostgreSQL state before spending can continue.
 22. **Continuous operational recovery** — production continuously schedules approval delivery, payment reconciliation, reconciliation monitoring, and audit-checkpoint retention on non-overlapping process-local loops.
@@ -31,6 +31,9 @@ Mino is a policy, authorization, approval, and security control plane for agenti
 25. **Hardened container runtime** — the production image runs non-root with a healthcheck; the reference Compose deployment uses read-only application filesystems, dropped capabilities, `no-new-privileges`, private PostgreSQL/Redis networking, runtime-mounted secrets, Redis authentication, AOF persistence, and `noeviction`.
 26. **Versioned database migrations** — committed Prisma migration history is the governed production/CI schema path. A separate short-lived migration image runs `prisma migrate deploy`, and the reference application service cannot start until migration succeeds.
 27. **Administrative identity and RBAC foundation** — administrative humans are represented separately from spending-beneficiary users using stable external `(issuer, subject)` identities, organization-local memberships, durable role assignments, and a centralized fail-closed permission authorizer. Built-in role meanings are deterministic code-reviewed permission bundles rather than mutable database definitions.
+28. **Cryptographically authenticated admin ingress** — optional administrative HTTP routes verify pinned-issuer Bearer JWTs with strict issuer/audience/subject/time/key/algorithm checks, then independently require the exact organization-local Mino permission. Invalid authentication and valid-but-unauthorized identities remain separate 401/403 boundaries.
+29. **Permissioned administrative inventory** — authenticated administrators can page through only the agents, policies, and merchants visible inside an authorized organization. Policy `BIGINT` monetary values remain exact minor-unit strings, and list projections omit agent public-key material and internal merchant upstream URLs.
+30. **Atomic administrative change audit foundation** — successful future admin mutations can use one PostgreSQL transaction to commit both the governed state change and a separately sequenced Ed25519-signed administrative change receipt. Before/after snapshots are defensively redacted before hashing or persistence, and a verifier detects mutation, gaps, broken links, signature corruption, and disagreement with the durable chain head.
 
 ## ACP trust boundary
 
@@ -54,6 +57,11 @@ POST /v1/acp/:merchantId/checkout_sessions/:checkoutSessionId/complete
 GET  /v1/approvals/:approvalRequestId
 POST /v1/approvals/:approvalRequestId/votes
 
+GET  /v1/admin/organizations/:organizationId/access
+GET  /v1/admin/organizations/:organizationId/agents
+GET  /v1/admin/organizations/:organizationId/policies
+GET  /v1/admin/organizations/:organizationId/merchants
+
 GET  /healthz
 GET  /readyz
 GET  /metrics   # optional; dedicated Bearer credential required
@@ -61,17 +69,25 @@ GET  /metrics   # optional; dedicated Bearer credential required
 
 The ACP request body remains protocol-compatible. Mino-specific mandate and agent-proof material lives in headers. Approval bridge endpoints use separate timestamped HMAC authentication. See `openapi/mino.openapi.yaml`.
 
-The administrative RBAC foundation does **not** yet add customer-facing admin HTTP routes. Future admin endpoints must first cryptographically establish a trusted external issuer/subject and then request the narrow permission required for the exact organization and operation; an email header or single global admin API key is not an administrative identity mechanism.
+Administrative routes are opt-in: they are not registered unless trusted admin JWT issuers are explicitly configured. The current administrative HTTP surface is read-only. No HTTP route can yet create, update, activate, suspend, rotate, issue, revoke, or otherwise mutate governed administrative state. See `docs/admin-http-authentication.md` and `docs/admin-inventory.md`.
 
 ## Administrative authorization boundary
 
 Administrative authority is separate from agent spending authority. The existing `User` model represents a person on whose behalf an agent may spend; it does not make that person an administrator. `AdminPrincipal` represents an externally authenticated human administrative identity and is keyed by stable `(issuer, subject)`. Email and display name are metadata only.
 
-An administrator must have an `ACTIVE` organization membership before any role grant is considered. Suspended or disabled principals, missing memberships, suspended or removed memberships, organization mismatches, and missing permissions fail closed. A membership in one tenant is never substituted for another.
+An administrative request first has to pass cryptographic Bearer-JWT verification against server-pinned trusted issuer keys. JWT validity is not Mino authorization: the verified `(issuer, subject)` must then resolve to an `ACTIVE` principal and `ACTIVE` membership in the exact organization named by the route, and that membership must grant the route's narrow permission. Suspended or disabled principals, missing memberships, suspended or removed memberships, organization mismatches, and missing permissions fail closed.
 
-The initial built-in roles are `ORGANIZATION_OWNER`, `SECURITY_ADMIN`, `FINANCE_MANAGER`, `AGENT_MANAGER`, `APPROVER`, and `AUDITOR`. Roles grant narrow permissions such as `agent.rotate_key`, `policy.activate`, `mandate.issue`, `approval.vote`, and `audit.verify`. Route handlers should authorize permissions rather than branching directly on role names.
+The initial built-in roles are `ORGANIZATION_OWNER`, `SECURITY_ADMIN`, `FINANCE_MANAGER`, `AGENT_MANAGER`, `APPROVER`, and `AUDITOR`. Roles grant narrow permissions such as `agent.rotate_key`, `policy.activate`, `mandate.issue`, `approval.vote`, and `audit.verify`. Route handlers authorize permissions rather than branching directly on role names.
 
 Separation of duties begins in the role catalog: `FINANCE_MANAGER` can administer relevant policy/mandate controls but does not automatically receive `approval.vote`; `APPROVER` can vote on human approval but does not thereby gain policy activation or mandate issuance authority. Future bounded resource scopes and four-eyes governance for especially sensitive administrative transitions are intended to layer above this deterministic RBAC substrate rather than becoming an arbitrary customer-authored ABAC expression language. See `docs/admin-authorization.md`.
+
+## Administrative change-audit boundary
+
+Administrative change auditing has its own per-organization chain and does not share the transaction audit sequence. `PostgresAdminChangeAuditLedger.appendInTransaction` is designed for future mutation handlers to mutate governed state and append the signed change receipt on the same PostgreSQL transaction; the caller owns the final commit or rollback.
+
+Each committed receipt snapshots the authorized principal and membership IDs, role set, permission, action/resource identity, request digest, timestamp, and sanitized before/after state. Principal and membership IDs are stored as historical scalar facts rather than cascading foreign keys, so later removal of an administrator cannot cascade-delete the change record.
+
+The verifier detects row mutation, sequence gaps, broken prior-digest links, event/chain digest mismatch, invalid or unknown historical signing keys, signature corruption, and a newest-row deletion while the stored chain head remains ahead. This is still **tamper-evident**, not magically immutable: unlike the existing transaction audit chain, administrative audit checkpoints are not yet exported to a separate trust domain. See `docs/admin-change-audit.md`.
 
 ## Human approval invariants
 
@@ -85,15 +101,15 @@ Separation of duties begins in the role catalog: `FINANCE_MANAGER` can administe
 - Daily-limit approval binds the reviewed prior-spend snapshot. Increased exposure before retry makes the approval stale.
 - Temporary reservations are released while approval is pending so an exact approved retry must reserve current allowance again.
 
-## Audit-integrity invariants
+## Transaction audit-integrity invariants
 
 - Sensitive-field redaction is repeated defensively before hashing and persistence.
-- Each organization has an independent monotonic audit sequence serialized by its locked `AuditChainHead` row.
-- Every audit row includes the previous digest and an Ed25519 signature over its persisted integrity state.
+- Each organization has an independent monotonic transaction-audit sequence serialized by its locked `AuditChainHead` row.
+- Every transaction-audit row includes the previous digest and an Ed25519 signature over its persisted integrity state.
 - Historical verification resolves the row's signing-key ID, allowing safe key rotation without invalidating older records.
 - Internal mutation, reordering, middle deletion, sequence gaps, chain-link changes, and signature corruption are detectable.
 - The mutable PostgreSQL chain head is operational serialization state, not an independent trust anchor.
-- Signed checkpoints are exported to a separate retention boundary so deletion of the newest database suffix can be detected against independently retained proof.
+- Signed transaction-audit checkpoints are exported to a separate retention boundary so deletion of the newest database suffix can be detected against independently retained proof.
 - The ledger is therefore described as **tamper-evident**, not magically immutable against a database superuser. See `docs/audit-integrity.md`.
 
 ## Operational metrics
@@ -169,4 +185,4 @@ The GitHub verification gate additionally builds the runtime and migration conta
 
 ## Next implementation slice
 
-The next product-level slice is the **cryptographically authenticated administrative request boundary plus first narrowly permissioned management APIs**. HTTP authentication must establish a trusted external issuer/subject before the centralized admin authorizer is invoked; subsequent agent, policy, merchant, mandate, membership, and audit surfaces should request explicit organization-local permissions rather than relying on a global administrator credential.
+The next hardening slice is **independent retention of signed administrative-audit checkpoints**, extending the separate-trust-domain protection already used for transaction audit. Once that boundary is proven, Mino can begin exposing narrowly permissioned administrative mutation APIs using the atomic state-change + signed-audit transaction pattern rather than adding writes that can succeed without an independently anchorable administrative receipt.

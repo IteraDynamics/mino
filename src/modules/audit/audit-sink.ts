@@ -47,6 +47,12 @@ function redact(value: unknown, key: string): unknown {
   if (REDACT_KEYS.has(key.toLowerCase())) {
     return "[REDACTED]";
   }
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+  if (typeof value === "bigint") {
+    return value.toString(10);
+  }
   if (Array.isArray(value)) {
     return value.map((entry) => redact(entry, key));
   }
