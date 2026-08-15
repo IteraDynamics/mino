@@ -61,6 +61,14 @@ jobs:
       - name: Verify database migration status
         run: npm run prisma:migrate:status
 
+      - name: Generate admin RBAC migration preview
+        run: |
+          npx prisma migrate diff \
+            --from-config-datasource \
+            --to-schema prisma/schema.prisma \
+            --script
+          exit 1
+
       - name: Verify migrated schema matches Prisma model
         run: >-
           npx prisma migrate diff
