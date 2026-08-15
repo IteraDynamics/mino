@@ -4,7 +4,7 @@ Mino has a concrete application composition root for running the implemented con
 
 ## Startup
 
-`src/server.ts` loads production configuration, constructs the dependency graph, and starts Fastify. Startup is fail-closed: PostgreSQL, Redis, and Prisma connectivity are checked before the application is returned, and malformed or missing security configuration causes startup to fail rather than substituting insecure defaults.
+`src/server.ts` loads production configuration, constructs the dependency graph, and starts Fastify. Startup is fail-closed: PostgreSQL, Redis, and Prisma connectivity are checked before the application is returned, malformed or missing security configuration causes startup to fail rather than substituting insecure defaults, and relevant Redis authorization state is reconstructed from durable PostgreSQL facts before the production application is returned.
 
 The compiled service starts with:
 
@@ -73,9 +73,55 @@ The checkpoint-retention transport secret is required through exactly one of `MI
 
 ## Concrete dependency graph
 
-`createProductionApplication()` constructs and connects PostgreSQL/Prisma, Redis, repositories, mandate-token verification, signed agent-request verification, replay protection, policy evaluation, atomic spend reservations, durable approvals, approval-notification delivery, durable payment outcomes, continuous payment reconciliation, unresolved-payment monitoring, the tamper-evident audit ledger, optional checkpoint-retention worker composition, ACP merchant forwarding, and delegation assertions.
+`createProductionApplication()` constructs and connects PostgreSQL/Prisma, Redis, repositories, mandate-token verification, signed agent-request verification, replay protection, policy evaluation, atomic Redis spend reservations, durable PostgreSQL reservation mirrors, authorization-state reconstruction, durable approvals, approval-notification delivery, durable payment outcomes, continuous payment reconciliation, unresolved-payment monitoring, the tamper-evident audit ledger, optional checkpoint-retention worker composition, ACP merchant forwarding, and delegation assertions.
 
 The production server supplies the required HTTPS checkpoint retainer to that composition root, so the runnable service includes external checkpoint export. Private signing keys and merchant credentials are never persisted into Mino's transactional tables.
+
+## Redis authorization state recovery
+
+Redis is Mino's fast atomic enforcement layer for rolling spend, active reservations, velocity, idempotency, and reservation lifecycle details. PostgreSQL now provides the durable recovery facts needed to fail closed after a complete Redis loss.
+
+### Durable reservation bridge
+
+When Redis accepts a new spend reservation, production does not immediately continue toward payment. The reservation is first mirrored into PostgreSQL `SpendReservation` with the organization/user/agent/mandate binding, idempotency key, merchant, currency, amount, reserve time, expiry, and lifecycle status.
+
+The order is intentionally conservative:
+
+1. Redis atomically evaluates policy state and creates the reservation.
+2. Mino persists the accepted reservation in PostgreSQL.
+3. Only after that durable write succeeds may the request proceed toward `PaymentOutcome` creation and merchant dispatch.
+
+If step 2 fails, Mino attempts to release the Redis reservation and fails the request. A crash after the Redis reservation but before the durable write can leave only a short-lived Redis hold; no merchant dispatch has been authorized past the durable boundary. A crash after the durable write leaves a PostgreSQL fact that reconstruction can restore.
+
+Reservation lifecycle transitions are mirrored conservatively as well. Commit, release, approval release, and reconciliation-hold extension update the durable reservation before the corresponding Redis transition. A durable `COMMITTED` reservation cannot be reopened as `RESERVED` by a stale same-idempotency retry. Released or expired rows may be replaced by the fresh reservation created by an approved retry.
+
+### Reconstruction source
+
+For each mandate, `RedisAuthorizationStateReconstructor` rebuilds:
+
+- recent `SpendReservation` rows in `COMMITTED` state as rolling committed spend
+- active pre-dispatch `SpendReservation` rows in `RESERVED` state as active allowance holds
+- unresolved `PaymentOutcome` rows (`FORWARDING`/`UNKNOWN`) as reconciliation holds, including legacy rows without a durable reservation mirror
+- recent successful `PaymentOutcome` rows as a legacy/cross-dispatch committed-spend fallback when no committed reservation mirror exists
+- recent `PaymentOutcome` and checkout-completion `AuditLog` activity as velocity history
+
+Unresolved payments receive a fresh reconciliation hold during recovery so uncertainty cannot silently age out merely because Redis restarted. Durable amounts are rejected if they exceed the same exact-integer range accepted by the Redis/Lua authorization engine.
+
+The restore is performed by one Redis Lua script per mandate. The per-mandate key `mino:v1:auth:{mandateId}:state-reconstructed` is written only after the reconstructed committed/reserved/velocity/detail state has been applied. Conflicting durable state removes or withholds that marker and fails closed.
+
+### Startup and later loss
+
+Production startup proactively calls `reconstructAll()` after PostgreSQL and Redis connectivity checks. Relevant active mandates and mandates with recent/unresolved durable money state are reconstructed before the application is returned.
+
+Every production reservation lifecycle operation is also wrapped by `ReconstructingAuthorizationReservations`. It requires the per-mandate marker before the operation and checks the marker again afterward. If Redis is completely wiped after startup, the missing marker triggers lazy reconstruction before that mandate can authorize or finalize more spend. If Redis disappears during an authorization operation, the post-operation marker check fails the request rather than trusting a reservation that vanished underneath it.
+
+Commit and reconciliation-hold operations can force one reconstruction/retry when reservation detail was lost, allowing durable payment recovery to rehydrate the Redis detail needed by the existing lifecycle scripts.
+
+### Explicit boundary
+
+This design targets **complete Redis state loss/restart**, where the state and reconstruction marker disappear together. It does not claim to detect arbitrary selective eviction of one authorization key while the marker somehow survives. Production Redis must therefore use an appropriate `noeviction` policy plus persistence/replication/availability controls suitable for a financial authorization dependency.
+
+The reconstruction also does not claim to recreate every ephemeral Redis idempotency result for requests that never crossed a durable payment or approval boundary. Those requests are re-evaluated under current governed state. The safety-critical monetary holds and recent velocity history are reconstructed from durable facts.
 
 ## Background workers
 
@@ -111,19 +157,22 @@ A read-only `PaymentReconciliationMonitor` separately summarizes unresolved coun
 
 ## Readiness and liveness
 
-`GET /healthz` reports process liveness. `GET /readyz` returns ready only when PostgreSQL, Redis, and Prisma are reachable. Unresolved payments or a temporary checkpoint-retention outage do not make the HTTP data plane unready; they remain surfaced through governed recovery or operational warnings rather than altering authorization behavior.
+`GET /healthz` reports process liveness. `GET /readyz` returns ready only when PostgreSQL, Redis, and Prisma are reachable. Startup reconstruction completes before the application is returned. A later full Redis wipe is handled fail-closed per mandate on the next guarded authorization operation rather than by claiming that simple Redis connectivity alone proves all reconstructed keys are present.
+
+Unresolved payments or a temporary checkpoint-retention outage do not make the HTTP data plane unready; they remain surfaced through governed recovery or operational warnings rather than altering authorization behavior.
 
 ## Verification boundary
 
-The production-composition integration test uses real PostgreSQL, Redis, Prisma repositories, mandate signatures, agent signatures, nonce replay protection, spend reservation state, payment outcome persistence, and audit-chain verification. The only intentionally replaced boundary is the external merchant network call.
+The production-composition integration test uses real PostgreSQL, Redis, Prisma repositories, mandate signatures, agent signatures, nonce replay protection, durable spend reservation state, payment outcome persistence, and audit-chain verification. The only intentionally replaced boundary is the external merchant network call.
 
 Production-config unit coverage verifies mounted secret loading, ambiguous dual-source rejection, required-secret failure, Ed25519 validation, active audit key-pair matching, and retention of historical audit public keys. Separate checkpoint-retention unit tests cover HTTPS enforcement, mounted HMAC-secret loading, canonical HMAC transport, non-2xx failure handling, and deterministic event IDs. PostgreSQL integration tests cover stable checkpoint export, chain-head advancement, retry identity, and restart-style duplicate delivery for downstream deduplication.
+
+Redis-recovery verification uses real PostgreSQL and Redis. It covers reconstruction of recent committed spend, unresolved reconciliation holds, recent blocked-attempt velocity, repeated full Redis loss, rejection of amounts outside Redis's exact-integer range, pre-`PaymentOutcome` durable reservation recovery, committed-state non-regression, approval-release reservation replacement, and fail-closed marker loss during an operation.
 
 ## Still intentionally outside this slice
 
 Remaining productionization work includes:
 
 - direct vendor-specific KMS signing APIs where private key material never leaves an HSM/KMS boundary
-- Redis authorization-reservation reconstruction after cold Redis loss
 - vendor-specific metrics/alert transports, tracing, and operational dashboards
 - broader ACP endpoint coverage and customer-facing administrative surfaces
