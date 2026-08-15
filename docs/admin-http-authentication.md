@@ -37,7 +37,7 @@ The configuration is server-controlled public verification material, not a beare
 }
 ```
 
-Issuer URLs must be canonical HTTPS URLs without embedded credentials, query strings, or fragments. Mino compares the JWT `iss` claim exactly against the configured issuer string.
+Issuer identifiers must be HTTPS URLs without embedded credentials, query strings, or fragments. Mino does not rewrite the configured issuer identifier: the JWT `iss` claim must exactly match that trusted string, including any intentional path or trailing-slash choice made by the identity provider.
 
 Supported key/algorithm bindings are deliberately narrow:
 
@@ -76,7 +76,7 @@ Authentication and authorization failures are intentionally coarse:
 - malformed/missing/invalid bearer token → `401 {"error":"unauthorized"}` with a Bearer challenge
 - valid bearer identity without required Mino tenant permission → `403 {"error":"forbidden"}`
 
-Internal RBAC denial reasons such as missing membership, suspended principal, or missing permission are not reflected back to unauthenticated callers.
+Internal RBAC denial reasons such as missing membership, suspended principal, or missing permission are not reflected back to callers.
 
 ## Deliberate non-claims
 
