@@ -1,3 +1,5 @@
+import { ACP_STABLE_VERSION } from "./acp-adapter.js";
+
 export interface MerchantEndpoint {
   readonly id: string;
   readonly domain: string;
@@ -11,17 +13,17 @@ export interface MerchantRegistry {
 }
 
 export interface MerchantRequestHeaders {
-  readonly authorization: string;
-  readonly apiVersion: string;
-  readonly idempotencyKey?: string;
   readonly requestId: string;
+  readonly idempotencyKey?: string;
+  readonly apiVersion: string;
+  readonly authorization: string;
   readonly delegationAssertion?: string;
 }
 
 export interface MerchantResponse {
   readonly status: number;
-  readonly body: unknown;
   readonly headers?: Readonly<Record<string, string>>;
+  readonly body: unknown;
 }
 
 export interface ACPMerchantClient {
@@ -30,28 +32,47 @@ export interface ACPMerchantClient {
     payload: unknown,
     headers: MerchantRequestHeaders,
   ): Promise<MerchantResponse>;
-
   getCheckout(
     merchant: MerchantEndpoint,
     checkoutSessionId: string,
     headers: MerchantRequestHeaders,
   ): Promise<MerchantResponse>;
-
+  /**
+   * ACP update-checkout support. Optional on older in-process test doubles; the
+   * production FetchACPMerchantClient implements it and lifecycle composition
+   * requires it.
+   */
+  updateCheckout?(
+    merchant: MerchantEndpoint,
+    checkoutSessionId: string,
+    payload: unknown,
+    headers: MerchantRequestHeaders,
+  ): Promise<MerchantResponse>;
   completeCheckout(
     merchant: MerchantEndpoint,
     checkoutSessionId: string,
     payload: unknown,
     headers: MerchantRequestHeaders,
   ): Promise<MerchantResponse>;
-
   cancelCheckout(
     merchant: MerchantEndpoint,
     checkoutSessionId: string,
     headers: MerchantRequestHeaders,
+    payload?: unknown,
   ): Promise<MerchantResponse>;
 }
 
+export interface FetchACPMerchantClientOptions {
+  readonly timeoutMs?: number;
+}
+
 export class FetchACPMerchantClient implements ACPMerchantClient {
+  private readonly timeoutMs: number;
+
+  public constructor(options: FetchACPMerchantClientOptions = {}) {
+    this.timeoutMs = options.timeoutMs ?? 10_000;
+  }
+
   public async createCheckout(
     merchant: MerchantEndpoint,
     payload: unknown,
@@ -70,6 +91,21 @@ export class FetchACPMerchantClient implements ACPMerchantClient {
       `/checkout_sessions/${encodeURIComponent(checkoutSessionId)}`,
       "GET",
       undefined,
+      headers,
+    );
+  }
+
+  public async updateCheckout(
+    merchant: MerchantEndpoint,
+    checkoutSessionId: string,
+    payload: unknown,
+    headers: MerchantRequestHeaders,
+  ): Promise<MerchantResponse> {
+    return this.request(
+      merchant,
+      `/checkout_sessions/${encodeURIComponent(checkoutSessionId)}`,
+      "POST",
+      payload,
       headers,
     );
   }
@@ -93,12 +129,13 @@ export class FetchACPMerchantClient implements ACPMerchantClient {
     merchant: MerchantEndpoint,
     checkoutSessionId: string,
     headers: MerchantRequestHeaders,
+    payload: unknown = {},
   ): Promise<MerchantResponse> {
     return this.request(
       merchant,
       `/checkout_sessions/${encodeURIComponent(checkoutSessionId)}/cancel`,
       "POST",
-      {},
+      payload,
       headers,
     );
   }
@@ -110,54 +147,64 @@ export class FetchACPMerchantClient implements ACPMerchantClient {
     payload: unknown,
     headers: MerchantRequestHeaders,
   ): Promise<MerchantResponse> {
-    assertSafeMerchantEndpoint(merchant);
-    const target = new URL(path.replace(/^\//, ""), ensureTrailingSlash(merchant.baseUrl));
+    if (headers.apiVersion !== ACP_STABLE_VERSION) {
+      throw new Error("Refusing to send an unsupported ACP API version");
+    }
+    assertRegisteredHttpsTarget(merchant);
+
+    const target = new URL(path, ensureTrailingSlash(merchant.baseUrl));
     if (target.hostname.toLowerCase() !== merchant.domain.toLowerCase()) {
-      throw new Error("Merchant registry base URL hostname does not match merchant domain");
+      throw new Error("Resolved merchant target does not match registered domain");
+    }
+
+    const requestHeaders: Record<string, string> = {
+      "API-Version": headers.apiVersion,
+      Authorization: headers.authorization,
+      "Request-Id": headers.requestId,
+    };
+    if (headers.idempotencyKey) {
+      requestHeaders["Idempotency-Key"] = headers.idempotencyKey;
+    }
+    if (headers.delegationAssertion) {
+      requestHeaders["Mino-Delegation-Assertion"] = headers.delegationAssertion;
+    }
+    if (payload !== undefined) {
+      requestHeaders["Content-Type"] = "application/json";
     }
 
     const response = await fetch(target, {
       method,
+      headers: requestHeaders,
       redirect: "error",
-      headers: {
-        Authorization: headers.authorization,
-        "API-Version": headers.apiVersion,
-        "Request-Id": headers.requestId,
-        ...(headers.idempotencyKey ? { "Idempotency-Key": headers.idempotencyKey } : {}),
-        ...(headers.delegationAssertion
-          ? { "Mino-Delegation-Assertion": headers.delegationAssertion }
-          : {}),
-        ...(method === "POST" ? { "Content-Type": "application/json" } : {}),
-      },
-      ...(method === "POST" ? { body: JSON.stringify(payload) } : {}),
-      signal: AbortSignal.timeout(10_000),
+      signal: AbortSignal.timeout(this.timeoutMs),
+      ...(payload === undefined ? {} : { body: JSON.stringify(payload) }),
     });
 
-    const text = await response.text();
-    let body: unknown = undefined;
-    if (text.length > 0) {
-      try {
-        body = JSON.parse(text);
-      } catch {
-        body = { raw: text };
-      }
-    }
+    const contentType = response.headers.get("content-type") ?? "";
+    const body = contentType.includes("application/json")
+      ? await response.json()
+      : await response.text();
 
     return {
       status: response.status,
-      body,
       headers: Object.fromEntries(response.headers.entries()),
+      body,
     };
   }
 }
 
-function assertSafeMerchantEndpoint(merchant: MerchantEndpoint): void {
+export function assertRegisteredHttpsTarget(merchant: MerchantEndpoint): void {
+  if (!merchant.active) {
+    throw new Error("Merchant is inactive");
+  }
   const url = new URL(merchant.baseUrl);
   if (url.protocol !== "https:") {
     throw new Error("Merchant base URL must use HTTPS");
   }
-  if (!merchant.active) {
-    throw new Error("Merchant endpoint is disabled");
+  const hostname = url.hostname.toLowerCase();
+  const domain = merchant.domain.toLowerCase();
+  if (hostname !== domain) {
+    throw new Error("Merchant base URL hostname must exactly match registered domain");
   }
 }
 
