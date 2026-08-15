@@ -1,5 +1,6 @@
 import "dotenv/config";
-import { defineConfig, env } from "prisma/config";
+import { readFileSync, realpathSync } from "node:fs";
+import { defineConfig } from "prisma/config";
 
 export default defineConfig({
   schema: "prisma/schema.prisma",
@@ -7,6 +8,28 @@ export default defineConfig({
     path: "prisma/migrations",
   },
   datasource: {
-    url: env("DATABASE_URL"),
+    url: requiredDatabaseUrl(process.env),
   },
 });
+
+function requiredDatabaseUrl(environment: NodeJS.ProcessEnv): string {
+  const inline = environment.DATABASE_URL?.trim();
+  const file = environment.DATABASE_URL_FILE?.trim();
+  if ((inline && file) || (!inline && !file)) {
+    throw new Error("Prisma requires exactly one of DATABASE_URL or DATABASE_URL_FILE");
+  }
+  if (inline) {
+    return inline;
+  }
+
+  let value: string;
+  try {
+    value = readFileSync(realpathSync(file!), "utf8").trim();
+  } catch {
+    throw new Error("DATABASE_URL_FILE must resolve to a readable file");
+  }
+  if (!value) {
+    throw new Error("DATABASE_URL_FILE must not be empty");
+  }
+  return value;
+}

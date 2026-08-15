@@ -8,7 +8,7 @@ on:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
 
     services:
       postgres:
@@ -55,8 +55,18 @@ jobs:
       - name: Generate Prisma client
         run: npm run prisma:generate
 
-      - name: Materialize test database
-        run: npx prisma db push
+      - name: Apply committed database migrations
+        run: npm run prisma:migrate:deploy
+
+      - name: Verify database migration status
+        run: npm run prisma:migrate:status
+
+      - name: Verify migrated schema matches Prisma model
+        run: >-
+          npx prisma migrate diff
+          --exit-code
+          --from-config-datasource
+          --to-schema prisma/schema.prisma
 
       - name: Typecheck
         run: npm run typecheck
@@ -70,11 +80,27 @@ jobs:
       - name: Build production container image
         run: docker build --target runtime -t mino:ci .
 
-      - name: Verify production image metadata
+      - name: Build migration container image
+        run: docker build --target migration -t mino:migration-ci .
+
+      - name: Verify container authority split
         run: |
           test "$(docker image inspect mino:ci --format '{{.Config.User}}')" = "10001:10001"
+          test "$(docker image inspect mino:migration-ci --format '{{.Config.User}}')" = "10001:10001"
           docker image inspect mino:ci --format '{{json .Config.Healthcheck}}' | jq -e '.Test | length > 0'
           docker image inspect mino:ci --format '{{json .Config.Env}}' | jq -e 'all(.[]; contains("SECRET") | not)'
+          docker run --rm --entrypoint sh mino:ci -ec 'test ! -e /app/node_modules/.bin/prisma && test ! -d /app/prisma'
+          docker run --rm --entrypoint sh mino:migration-ci -ec 'test -x /app/node_modules/.bin/prisma && test -f /app/prisma/migrations/20260815050000_baseline/migration.sql'
+
+      - name: Run migration image with mounted datasource secret
+        run: |
+          database_secret="$(mktemp)"
+          printf '%s' "$DATABASE_URL" > "$database_secret"
+          chmod 0644 "$database_secret"
+          docker run --rm --network host \
+            -e DATABASE_URL_FILE=/run/secrets/database_url \
+            -v "$database_secret:/run/secrets/database_url:ro" \
+            mino:migration-ci
 
       - name: Validate hardened Compose runtime
         env:
@@ -94,6 +120,10 @@ jobs:
           jq -e '.services.mino.read_only == true' /tmp/mino-compose.json
           jq -e '.services.mino.cap_drop == ["ALL"]' /tmp/mino-compose.json
           jq -e '.services.mino.security_opt | index("no-new-privileges:true") != null' /tmp/mino-compose.json
+          jq -e '.services.migrate.read_only == true' /tmp/mino-compose.json
+          jq -e '.services.migrate.cap_drop == ["ALL"]' /tmp/mino-compose.json
+          jq -e '.services.migrate.security_opt | index("no-new-privileges:true") != null' /tmp/mino-compose.json
+          jq -e '.services.mino.depends_on.migrate.condition == "service_completed_successfully"' /tmp/mino-compose.json
           jq -e '.networks.backend.internal == true' /tmp/mino-compose.json
-          jq -e '(.services.postgres.ports == null) and (.services.redis.ports == null)' /tmp/mino-compose.json
+          jq -e '(.services.postgres.ports == null) and (.services.redis.ports == null) and (.services.migrate.ports == null)' /tmp/mino-compose.json
           jq -e '.services.mino.ports | length == 1' /tmp/mino-compose.json

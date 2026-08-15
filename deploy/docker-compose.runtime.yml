@@ -5,6 +5,7 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
+      target: runtime
     image: mino:local
     restart: unless-stopped
     init: true
@@ -53,8 +54,34 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     networks:
       - frontend
+      - backend
+
+  migrate:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      target: migration
+    image: mino:migration-local
+    restart: "no"
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      DATABASE_URL_FILE: /run/secrets/database_url
+    secrets:
+      - database_url
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
       - backend
 
   postgres:
