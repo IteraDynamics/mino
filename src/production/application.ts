@@ -42,6 +42,7 @@ import {
 } from "../modules/spending/authorization-state-reconstruction.js";
 import { ExpiryAwareAuthorizationReservations } from "../modules/spending/expiry-aware-authorization-reservations.js";
 import { PostgresSpendReservationStore } from "../modules/spending/postgres-spend-reservation.store.js";
+import type { OperationalMetricsConfig } from "../infrastructure/config/operational-metrics-config.js";
 import type { ProductionConfig } from "../infrastructure/config/production-config.js";
 import {
   StaticAuditKeyProvider,
@@ -59,10 +60,12 @@ import {
   RedisAuthorizationScriptClient,
   RedisNonceReplayGuard,
 } from "../infrastructure/redis/redis-adapters.js";
+import { PostgresOperationalMetrics } from "../operations/postgres-operational-metrics.js";
 
 export interface ProductionApplicationOverrides {
   readonly merchantClient?: ACPMerchantClient;
   readonly auditCheckpointRetainer?: AuditCheckpointRetainer;
+  readonly operationalMetrics?: OperationalMetricsConfig;
   readonly generateId?: () => string;
   readonly now?: () => Date;
   readonly logger?: boolean;
@@ -208,12 +211,24 @@ export async function createProductionApplication(
           generateId,
         })
       : undefined;
+    const operationalMetrics = overrides.operationalMetrics
+      ? new PostgresOperationalMetrics(sql)
+      : undefined;
 
     app = await createApp({
       proxy,
       ...(lifecycleProxy ? { lifecycleProxy } : {}),
       approvals,
       approvalAuthenticator,
+      ...(operationalMetrics && overrides.operationalMetrics
+        ? {
+            metrics: {
+              metrics: operationalMetrics,
+              bearerToken: overrides.operationalMetrics.bearerToken,
+              now: clock,
+            },
+          }
+        : {}),
       logger: overrides.logger ?? true,
       ...(overrides.now ? { now: overrides.now } : {}),
     });
