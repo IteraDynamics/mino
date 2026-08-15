@@ -15,6 +15,10 @@ import { ApprovalNotificationOutboxWorker } from "../modules/approvals/approval-
 import { PostgresApprovalRequestStore } from "../modules/approvals/approval-request.store.js";
 import { DurableHumanApprovalService } from "../modules/approvals/durable-approval.service.js";
 import {
+  AuditCheckpointRetentionWorker,
+  type AuditCheckpointRetainer,
+} from "../modules/audit/audit-checkpoint-retention.js";
+import {
   PostgresAuditLedger,
   PostgresAuditVerifier,
 } from "../modules/audit/postgres-audit-ledger.js";
@@ -51,6 +55,7 @@ import {
 
 export interface ProductionApplicationOverrides {
   readonly merchantClient?: ACPMerchantClient;
+  readonly auditCheckpointRetainer?: AuditCheckpointRetainer;
   readonly generateId?: () => string;
   readonly now?: () => Date;
   readonly logger?: boolean;
@@ -61,6 +66,7 @@ export interface ProductionApplication {
   readonly reconciler: BackgroundPaymentReconciler;
   readonly reconciliationMonitor: PaymentReconciliationMonitor;
   readonly approvalNotifications: ApprovalNotificationOutboxWorker;
+  readonly auditCheckpointRetention?: AuditCheckpointRetentionWorker;
   readonly auditVerifier: PostgresAuditVerifier;
   readonly repositories: {
     readonly mandates: PrismaMandateRepository;
@@ -136,6 +142,9 @@ export async function createProductionApplication(
     );
     const audit = new PostgresAuditLedger(sql, auditKeys);
     const auditVerifier = new PostgresAuditVerifier(sql, auditKeys);
+    const auditCheckpointRetention = overrides.auditCheckpointRetainer
+      ? new AuditCheckpointRetentionWorker(sql, audit, overrides.auditCheckpointRetainer)
+      : undefined;
     const merchantClient = overrides.merchantClient ?? new FetchACPMerchantClient();
     const proxy = new CheckoutProxyService({
       mandateTokens,
@@ -204,6 +213,7 @@ export async function createProductionApplication(
       reconciler,
       reconciliationMonitor,
       approvalNotifications,
+      ...(auditCheckpointRetention ? { auditCheckpointRetention } : {}),
       auditVerifier,
       repositories: { mandates, merchants, policies, agentKeys },
       readiness,

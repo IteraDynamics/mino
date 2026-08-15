@@ -1,12 +1,23 @@
 import "dotenv/config";
 import { randomUUID } from "node:crypto";
+import { loadAuditCheckpointRetentionConfig } from "./infrastructure/config/audit-checkpoint-retention-config.js";
 import { loadProductionConfig } from "./infrastructure/config/production-config.js";
+import { WebhookAuditCheckpointRetainer } from "./modules/audit/audit-checkpoint-retention.js";
 import { paymentReconciliationNeedsAttention } from "./modules/payments/payment-reconciliation-monitor.js";
 import { createProductionApplication } from "./production/application.js";
 import { NonOverlappingWorkerLoop } from "./production/non-overlapping-worker-loop.js";
 
 const config = loadProductionConfig();
-const production = await createProductionApplication(config);
+const auditCheckpointRetentionConfig = loadAuditCheckpointRetentionConfig();
+const production = await createProductionApplication(config, {
+  auditCheckpointRetainer: new WebhookAuditCheckpointRetainer(auditCheckpointRetentionConfig),
+});
+const auditCheckpointRetention = production.auditCheckpointRetention;
+if (!auditCheckpointRetention) {
+  await production.close();
+  throw new Error("Audit checkpoint retention worker was not configured");
+}
+
 const approvalNotificationWorkerId = `approval-notify-${randomUUID()}`;
 const paymentReconciliationWorkerId = `payment-reconcile-${randomUUID()}`;
 let shuttingDown = false;
@@ -54,6 +65,27 @@ const paymentReconciliationLoop = new NonOverlappingWorkerLoop({
   },
 });
 
+const auditCheckpointRetentionLoop = new NonOverlappingWorkerLoop({
+  intervalMs: 60_000,
+  run: async () => {
+    const result = await auditCheckpointRetention.runOnce();
+    if (result.failed > 0) {
+      production.app.log.warn(
+        { auditCheckpointRetention: result },
+        "Signed audit checkpoints could not be retained externally",
+      );
+    } else if (result.delivered > 0) {
+      production.app.log.info(
+        { auditCheckpointRetention: result },
+        "Retained signed audit checkpoints externally",
+      );
+    }
+  },
+  onError: (error) => {
+    production.app.log.error({ error }, "Audit checkpoint retention loop failed");
+  },
+});
+
 async function shutdown(signal: string): Promise<void> {
   if (shuttingDown) {
     return;
@@ -64,6 +96,7 @@ async function shutdown(signal: string): Promise<void> {
     await Promise.all([
       approvalNotificationLoop.stop(),
       paymentReconciliationLoop.stop(),
+      auditCheckpointRetentionLoop.stop(),
     ]);
     await production.close();
     process.exitCode = 0;
@@ -87,11 +120,13 @@ try {
   });
   approvalNotificationLoop.start();
   paymentReconciliationLoop.start();
+  auditCheckpointRetentionLoop.start();
 } catch (error) {
   production.app.log.error({ error }, "Mino failed to start");
   await Promise.all([
     approvalNotificationLoop.stop(),
     paymentReconciliationLoop.stop(),
+    auditCheckpointRetentionLoop.stop(),
   ]).catch(() => undefined);
   await production.close().catch(() => undefined);
   process.exitCode = 1;

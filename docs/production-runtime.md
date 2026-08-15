@@ -26,6 +26,7 @@ Supported mounted secret alternatives are:
 - `MINO_APPROVAL_RESOLUTION_SECRET_FILE` instead of `MINO_APPROVAL_RESOLUTION_SECRET`
 - `MINO_APPROVAL_WEBHOOK_SECRET_FILE` instead of `MINO_APPROVAL_WEBHOOK_SECRET`
 - `MINO_MERCHANT_CREDENTIALS_FILE` instead of `MINO_MERCHANT_CREDENTIALS_JSON`
+- `MINO_AUDIT_CHECKPOINT_RETENTION_SECRET_FILE` instead of `MINO_AUDIT_CHECKPOINT_RETENTION_SECRET`
 
 Private-key files contain PEM directly. HMAC files contain the secret text directly. The merchant credential file contains the same JSON object accepted by `MINO_MERCHANT_CREDENTIALS_JSON`.
 
@@ -58,26 +59,49 @@ Delegation private keys may likewise be supplied from mounted secret files and r
 
 ## Required non-secret configuration
 
-The production configuration loader also reads:
+The production configuration loaders also read:
 
 - `DATABASE_URL` — PostgreSQL connection URL.
 - `REDIS_URL` — Redis connection URL.
 - `MINO_ISSUER` — HTTPS issuer identity used by Mino-signed artifacts.
 - `MINO_APPROVAL_WEBHOOK_URL` — HTTPS destination for approval-required notifications.
+- `MINO_AUDIT_CHECKPOINT_RETENTION_URL` — HTTPS destination for the independently operated signed-checkpoint retention bridge.
 - `MINO_HOST` — optional; defaults to `0.0.0.0`.
 - `MINO_PORT` — optional; defaults to `3000`.
 
+The checkpoint-retention transport secret is required through exactly one of `MINO_AUDIT_CHECKPOINT_RETENTION_SECRET` or `MINO_AUDIT_CHECKPOINT_RETENTION_SECRET_FILE` and must contain at least 32 characters.
+
 ## Concrete dependency graph
 
-`createProductionApplication()` constructs and connects PostgreSQL/Prisma, Redis, repositories, mandate-token verification, signed agent-request verification, replay protection, policy evaluation, atomic spend reservations, durable approvals, approval-notification delivery, durable payment outcomes, continuous payment reconciliation, unresolved-payment monitoring, the tamper-evident audit ledger, ACP merchant forwarding, and delegation assertions.
+`createProductionApplication()` constructs and connects PostgreSQL/Prisma, Redis, repositories, mandate-token verification, signed agent-request verification, replay protection, policy evaluation, atomic spend reservations, durable approvals, approval-notification delivery, durable payment outcomes, continuous payment reconciliation, unresolved-payment monitoring, the tamper-evident audit ledger, optional checkpoint-retention worker composition, ACP merchant forwarding, and delegation assertions.
 
-Private signing keys and merchant credentials are never persisted into Mino's transactional tables.
+The production server supplies the required HTTPS checkpoint retainer to that composition root, so the runnable service includes external checkpoint export. Private signing keys and merchant credentials are never persisted into Mino's transactional tables.
 
 ## Background workers
 
-The production server runs independent non-overlapping worker loops for approval notification delivery and payment outcome reconciliation. Each loop schedules its next run only after the prior run settles. PostgreSQL leases remain the cross-process claim boundary.
+The production server runs three independent non-overlapping worker loops:
+
+- approval notification delivery every two seconds
+- payment outcome reconciliation every two seconds
+- signed audit-checkpoint retention export every minute
+
+Each loop schedules its next run only after the prior run settles. PostgreSQL leases remain the cross-process claim boundary for approval and payment work.
+
+Audit-checkpoint retention intentionally uses a different concurrency model. Each checkpoint event has a deterministic event ID derived from the complete signed checkpoint, and the external retention service must deduplicate that ID. Multiple Mino instances or a restarted process may therefore resend the same checkpoint without relying on mutable database-local publication state to claim that an external anchor exists.
 
 On `SIGTERM` or `SIGINT`, new loop iterations stop and in-flight runs are allowed to settle before Redis, Prisma, and PostgreSQL resources are closed.
+
+## External audit-checkpoint retention
+
+For every organization with a non-empty audit chain, the worker reads the current `AuditChainHead` and asks the existing `PostgresAuditLedger` to issue the checkpoint. To make retries stable, it uses the head's `updatedAt` timestamp as the checkpoint issue time and confirms after signing that the sequence and digest did not advance. If the head races forward repeatedly, that organization is treated as a failed export for the run rather than emitting an unstable identity.
+
+The HTTPS event carries the full Ed25519-signed checkpoint plus a deterministic `X-Mino-Event-Id`. A separate HMAC-SHA256 transport signature binds the canonical event body to a timestamp. Redirects are rejected and non-2xx responses are treated as failures.
+
+Successful event IDs are remembered only in process memory to avoid needless repeats during that process lifetime. The external retained copy—not a flag in PostgreSQL—is the independent evidence. After a restart or on another Mino instance, the same stable checkpoint may be resent. This is an **at-least-once** retention transport, not an exactly-once claim.
+
+The receiver must return 2xx only after durable retention and must deduplicate `X-Mino-Event-Id`. It should operate in a separate trust domain and can be backed by WORM/object-lock storage, an independently controlled compliance archive, a transparency/timestamp service, or a future blockchain anchoring implementation. Mino cannot prove that an arbitrary configured HTTP service is immutable merely because it acknowledged a request.
+
+Failures emit structured warnings suitable for routing into the deployment's monitoring stack. Checkpoint-export failure does not weaken or bypass transaction authorization and does not mutate payment state.
 
 ## Payment reconciliation operations
 
@@ -87,19 +111,19 @@ A read-only `PaymentReconciliationMonitor` separately summarizes unresolved coun
 
 ## Readiness and liveness
 
-`GET /healthz` reports process liveness. `GET /readyz` returns ready only when PostgreSQL, Redis, and Prisma are reachable. Unresolved payments do not make the HTTP data plane unready; they remain governed by reconciliation state and operational monitoring.
+`GET /healthz` reports process liveness. `GET /readyz` returns ready only when PostgreSQL, Redis, and Prisma are reachable. Unresolved payments or a temporary checkpoint-retention outage do not make the HTTP data plane unready; they remain surfaced through governed recovery or operational warnings rather than altering authorization behavior.
 
 ## Verification boundary
 
 The production-composition integration test uses real PostgreSQL, Redis, Prisma repositories, mandate signatures, agent signatures, nonce replay protection, spend reservation state, payment outcome persistence, and audit-chain verification. The only intentionally replaced boundary is the external merchant network call.
 
-Production-config unit coverage verifies mounted secret loading, ambiguous dual-source rejection, required-secret failure, Ed25519 validation, active audit key-pair matching, and retention of historical audit public keys.
+Production-config unit coverage verifies mounted secret loading, ambiguous dual-source rejection, required-secret failure, Ed25519 validation, active audit key-pair matching, and retention of historical audit public keys. Separate checkpoint-retention unit tests cover HTTPS enforcement, mounted HMAC-secret loading, canonical HMAC transport, non-2xx failure handling, and deterministic event IDs. PostgreSQL integration tests cover stable checkpoint export, chain-head advancement, retry identity, and restart-style duplicate delivery for downstream deduplication.
 
 ## Still intentionally outside this slice
 
 Remaining productionization work includes:
 
 - direct vendor-specific KMS signing APIs where private key material never leaves an HSM/KMS boundary
-- external retention for signed audit checkpoints in a separate trust domain
+- Redis authorization-reservation reconstruction after cold Redis loss
 - vendor-specific metrics/alert transports, tracing, and operational dashboards
 - broader ACP endpoint coverage and customer-facing administrative surfaces
