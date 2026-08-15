@@ -1,0 +1,4 @@
+services:
+  mino:
+    environment:
+      MINO_ADMIN_JWT_ISSUERS_JSON: ${MINO_ADMIN_JWT_ISSUERS_JSON:?set trusted admin JWT issuers}
