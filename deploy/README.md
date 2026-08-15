@@ -4,24 +4,19 @@ This directory contains a production-like Docker Compose baseline for running th
 
 ## Security posture
 
-The Mino application image:
+The long-running Mino application image:
 
 - runs as non-root UID/GID `10001`
-- contains only production dependencies and compiled application output in the runtime stage
+- contains only production dependencies and compiled application output
+- does **not** contain the Prisma migration CLI or `prisma/migrations`
 - excludes repository secrets, local environment files, Git metadata, coverage, and artifacts from the build context
 - provides a `/healthz` container healthcheck
 
-The Compose service additionally:
+The short-lived `migration` image is a separate authority boundary. It retains the Prisma CLI and committed migration history, runs non-root, and exists only to execute `prisma migrate deploy` before application startup.
 
-- uses a read-only root filesystem
-- drops all Linux capabilities
-- enables `no-new-privileges`
-- uses a bounded `/tmp` tmpfs
-- exposes only the Mino HTTP port
-- binds that port to host loopback by default
-- receives sensitive runtime values through mounted secret files
+The Compose services additionally use read-only root filesystems, bounded tmpfs storage, dropped Linux capabilities, and `no-new-privileges` where applicable. Only the Mino application publishes a host port, bound to loopback by default.
 
-PostgreSQL and Redis are attached only to the internal `backend` network and publish no host ports in the reference composition. The application is the only service attached to both frontend and backend networks.
+PostgreSQL, Redis, and the migration job are attached only to the internal `backend` network and publish no host ports in the reference composition.
 
 Redis uses `deploy/redis.conf` with AOF persistence and `maxmemory-policy noeviction`. The reference service also requires authentication. These settings matter because Mino's cold-loss reconstruction is designed for complete Redis loss/restart; arbitrary selective eviction while a reconstruction marker survives is deliberately outside that recovery claim.
 
@@ -67,7 +62,7 @@ audit_checkpoint_retention_secret
 metrics_bearer_token
 ```
 
-`database_url` contains the complete PostgreSQL connection URL used by Mino. Its password must match `postgres_password` when using the included PostgreSQL service. Mino accepts this through `DATABASE_URL_FILE`; configuring both `DATABASE_URL` and `DATABASE_URL_FILE` fails closed.
+`database_url` contains the complete PostgreSQL connection URL used by both the migration job and Mino. Its password must match `postgres_password` when using the included PostgreSQL service. `prisma.config.ts` and the application both support `DATABASE_URL_FILE`; ambiguous inline-plus-file configuration fails closed.
 
 `redis_url` contains the authenticated Redis URL used by Mino, for example `redis://:password@redis:6379`. Its password must match `redis_password` when using the included Redis service. Mino accepts this through `REDIS_URL_FILE`; configuring both Redis URL sources likewise fails closed.
 
@@ -75,9 +70,21 @@ Private-key files contain PEM directly. HMAC/token files contain the secret text
 
 Never commit real files from this directory. `deploy/secrets/.gitignore` keeps the secret directory deny-by-default.
 
-## Database schema prerequisite
+## Database migration gate
 
-This container-runtime slice does not invent a database migration policy. The target PostgreSQL database must already contain the schema expected by the deployed Mino build. The follow-on governed migration slice replaces that prerequisite with versioned `prisma migrate deploy` execution before application startup.
+On startup Compose enforces:
+
+```text
+PostgreSQL healthy
+       ↓
+`migrate` service runs committed Prisma migrations
+       ↓ service_completed_successfully
+Mino application may start
+```
+
+If migration fails, the long-running Mino service is not started through this dependency chain. The migration service receives the database connection secret only; it does not receive Redis credentials, signing keys, merchant credentials, approval secrets, audit-retention credentials, or metrics credentials.
+
+Fresh databases are created from committed migration history. Existing databases that predate migration history require the one-time verified baseline procedure in `docs/database-migrations.md`; do not run the baseline CREATE statements blindly against an existing production schema.
 
 ## Start
 
@@ -86,6 +93,8 @@ From the repository root:
 ```bash
 docker compose -f deploy/docker-compose.runtime.yml up --build -d
 ```
+
+Compose builds both the short-lived migration image and long-running runtime image. It waits for PostgreSQL, applies pending migrations, then starts Mino only if migration completes successfully.
 
 Then check liveness/readiness from the host-bound endpoint:
 
@@ -104,6 +113,7 @@ curl -H "Authorization: Bearer <metrics token>" http://127.0.0.1:3000/metrics
 
 The Compose PostgreSQL/Redis services are replaceable boundaries. In a managed environment, point the mounted `database_url` and `redis_url` secrets at the managed services and preserve the same relevant guarantees:
 
+- versioned migrations execute as a pre-deployment job before application code that needs them starts
 - PostgreSQL durability/backups appropriate for financial control-plane state
 - Redis authentication/TLS/network isolation as supported by the provider
 - Redis no-eviction semantics for Mino authorization keys
