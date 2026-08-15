@@ -4,7 +4,7 @@ Mino is a policy, authorization, approval, and security control plane for agenti
 
 ## Implemented MVP security path
 
-The current branch contains the policy kernel plus the ACP proxy, payment-reconciliation, autonomous reconciliation, durable human-approval, durable approval-notification delivery, tamper-evident audit, production-application wiring, continuous recovery, and managed-secret input slices:
+The current branch contains the policy kernel plus the ACP proxy, payment-reconciliation, autonomous reconciliation, durable human-approval, durable approval-notification delivery, tamper-evident audit, production-application wiring, continuous recovery, managed-secret inputs, and external audit-checkpoint retention:
 
 1. **Spend mandate** — Mino issues/verifies compact Ed25519-signed mandate tokens. The bearer token only carries identity/delegation references; the immutable server-side mandate snapshot remains authoritative and raw token values are never persisted.
 2. **Agent identity proof** — payment-facing requests carry an Ed25519 request signature bound to method, path, timestamp, nonce, mandate-token JTI digest, ACP version, idempotency key, and canonical body digest. Nonces are claimed in Redis to reject replay.
@@ -26,6 +26,7 @@ The current branch contains the policy kernel plus the ACP proxy, payment-reconc
 18. **Durable approval notification delivery** — the persisted `ApprovalRequest` itself is the durable outbox signal, so the request path does not depend on an approval webhook being online. A PostgreSQL-backed worker leases pending deliveries with `FOR UPDATE SKIP LOCKED`, retries failures with bounded exponential backoff, records only sanitized error codes, dead-letters exhausted/expired work, and reuses the stable approval-request ID as the event ID for at-least-once downstream deduplication.
 19. **Continuous payment recovery and operational monitoring** — production schedules payment reconciliation continuously on a non-overlapping worker loop. A read-only PostgreSQL monitor reports unresolved counts, stale outcomes, high retry counts, and oldest unresolved age, with structured warnings when payment uncertainty exceeds the normal recovery window. Shutdown drains in-flight worker work before closing data stores.
 20. **Managed secret inputs and safe audit-key rotation** — private signing keys, approval HMAC secrets, and merchant reconciliation credentials may be supplied through mounted secret files compatible with external vault/CSI/sidecar patterns rather than ordinary inline environment values. Startup rejects conflicting secret sources, invalid Ed25519 keys, and an active audit private key that does not match the public key registered under its active key ID. Historical audit public keys remain available so old rows stay verifiable across controlled rolling rotations.
+21. **Independent audit-checkpoint retention export** — production periodically issues stable Ed25519-signed checkpoints for organization audit heads and sends them over an HTTPS/HMAC transport to a separately operated retention bridge. Delivery is at-least-once with a deterministic event ID, so retries, restarts, and multiple Mino instances may safely resend while the external system deduplicates and durably anchors the checkpoint outside PostgreSQL.
 
 ## ACP trust boundary
 
@@ -70,7 +71,9 @@ The ACP request body remains protocol-compatible. Mino-specific delegation and a
 - The signed event digest covers the persisted payloads, decision snapshot, queryable verdict/reason/policy/latency fields, merchant identity, request digest, reservation reference, upstream status, and other audit context.
 - Each row stores its previous chain digest and is signed with Ed25519. Historical verification resolves the row's `signingKeyId`, so signing keys may rotate without invalidating older entries.
 - Internal mutation, reordering, middle deletion, sequence gaps, changed chain links, and signature corruption are detectable.
-- A database-local hash chain cannot by itself prove that a privileged attacker deleted the newest suffix and rewrote the mutable local head to the remaining prefix. A signed checkpoint retained outside PostgreSQL (for example in independent object storage, a compliance archive, or another trust domain) anchors a known chain head and makes that truncation detectable.
+- A database-local hash chain cannot by itself prove that a privileged attacker deleted the newest suffix and rewrote the mutable local head to the remaining prefix. A signed checkpoint retained outside PostgreSQL anchors a known chain head and makes that truncation detectable.
+- Production exports stable signed checkpoints to a separately configured retention bridge. The receiver must durably retain before returning 2xx and deduplicate the deterministic event ID; Mino intentionally does not record a database-local flag pretending that its own mutable database can prove the external copy is immutable.
+- The retention bridge can be backed by WORM/object-lock storage, a compliance archive, a transparency/timestamp service, or a future blockchain anchor. Mino does not claim that an arbitrary HTTP endpoint is immutable merely because it acknowledged a request.
 - The ledger is therefore described as **tamper-evident**, not as magically immutable against a database superuser. See `docs/audit-integrity.md`.
 
 ## Production runtime
@@ -84,7 +87,7 @@ npm start
 
 Production startup fails closed when required data stores, keys, or security configuration are unavailable or malformed. `GET /healthz` is process liveness; `GET /readyz` checks PostgreSQL, Prisma, and Redis connectivity before reporting the service ready for transaction traffic. `SIGTERM` and `SIGINT` trigger an idempotent graceful shutdown.
 
-The server continuously runs both approval-notification delivery and payment reconciliation on non-overlapping worker loops. PostgreSQL leases remain the cross-instance claim boundary. Unresolved payment outcomes are monitored independently: short-lived uncertainty is informational, while stale or high-attempt outcomes emit structured warnings suitable for routing into a deployment's monitoring stack.
+The server continuously runs approval-notification delivery and payment reconciliation, plus a one-minute audit-checkpoint retention loop. All three use non-overlapping process-local scheduling. PostgreSQL leases remain the cross-instance claim boundary for approval/payment work; audit retention deliberately permits cross-instance duplicate export because its stable event ID is designed for external deduplication. Unresolved payment outcomes and checkpoint-retention failures emit structured operational warnings.
 
 Sensitive configuration can be supplied from mounted secret files rather than inline environment values. This supports external systems such as Vault Agent, Kubernetes CSI secret stores, and cloud secret-manager sidecars without persisting secrets into Mino tables. Secret material is validated at startup and adopted through controlled rolling restarts; this is not an in-process hot-reload claim. Audit rotation requires the active private key to match the public key registered under the active signing-key ID, while historical public keys remain available for verification. See `docs/production-runtime.md`.
 
@@ -132,7 +135,7 @@ npm run test:integration
 
 ## Next implementation slice
 
-- Add operational export/retention for signed audit checkpoints in a separate trust domain.
 - Add direct vendor-specific KMS/HSM signing integrations where private key material never leaves the managed cryptographic boundary.
+- Reconstruct Redis authorization reservations from durable PostgreSQL state after cold Redis loss.
 - Expand ACP proxy coverage to retrieve/update/cancel while keeping only payment-bearing operations behind spend reservation.
 - Add vendor-specific metrics/alert transports, tracing, and operational dashboards as deployment needs mature.
