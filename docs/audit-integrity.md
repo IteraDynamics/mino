@@ -52,10 +52,22 @@ Mino therefore supports signed chain checkpoints. `issueCheckpoint()` returns a 
 
 A checkpoint becomes a trusted anchor only when retained outside the same PostgreSQL trust domain—for example in independent object storage with retention controls, a compliance archive, another service/account, or an external transparency system. Later verification against that checkpoint detects a local database whose head was truncated below the anchored sequence or whose digest at the anchored sequence no longer matches.
 
-The current slice creates and verifies checkpoints but does not yet implement their operational export/retention destination.
+## External checkpoint retention
+
+The production server periodically exports signed checkpoints to a separately configured HTTPS retention bridge. The transport event includes a deterministic event ID plus the complete Ed25519-signed checkpoint. Transport authentication uses HMAC-SHA256 over the canonical event body and a timestamp.
+
+For an unchanged organization chain head, Mino derives a stable checkpoint issue time from the chain head's own `updatedAt` value and confirms that the head did not advance while the checkpoint was being signed. That makes both the signed checkpoint and its retention event ID stable across retries and process restarts.
+
+Delivery is intentionally **at-least-once**. A process remembers successful event IDs only to suppress redundant sends while that process remains alive. Another Mino instance or a restarted process may resend the same event. The retention service must deduplicate `X-Mino-Event-Id` and must return 2xx only after the signed checkpoint has been durably committed to the independent retention system.
+
+The retention transport does not write a database-local flag claiming that the checkpoint is externally immutable. Such a flag would live in the same mutable trust domain and therefore could not prove external retention. The independent retained copy is the evidence.
+
+`MINO_AUDIT_CHECKPOINT_RETENTION_URL` must use HTTPS. Its HMAC secret may be supplied inline through `MINO_AUDIT_CHECKPOINT_RETENTION_SECRET` or through the mounted-file alternative `MINO_AUDIT_CHECKPOINT_RETENTION_SECRET_FILE`, but never both.
+
+The configured receiver is responsible for the actual retention guarantee. Suitable implementations include a bridge backed by WORM/object-lock storage, a compliance archive in a separate account, an append-only transparency service, a trusted timestamp service, or a future blockchain anchoring backend. Mino does not claim that an arbitrary HTTP endpoint is immutable merely because it returned 2xx.
 
 ## Security claim
 
-The correct claim for the current implementation is **cryptographically tamper-evident audit logging**.
+The correct claim for the current implementation is **cryptographically tamper-evident audit logging with independently exportable signed checkpoints**.
 
-It is not claimed to be physically immutable against a PostgreSQL superuser. Strong immutability requires deployment controls outside this application layer, such as append-only database permissions, independent checkpoint retention, WORM/object-lock storage, or another external trust anchor.
+It is not claimed to be physically immutable against a PostgreSQL superuser. Stronger immutability depends on deployment controls outside the database trust domain, including the configured external checkpoint-retention system.
