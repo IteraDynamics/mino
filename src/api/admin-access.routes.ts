@@ -20,6 +20,8 @@ export async function registerAdminAccessRoutes(
   dependencies: AdminAccessRouteDependencies,
 ): Promise<void> {
   app.get("/v1/admin/organizations/:organizationId/access", async (request, reply) => {
+    reply.header("cache-control", "no-store");
+
     const parsedParams = paramsSchema.safeParse(request.params);
     if (!parsedParams.success) {
       return reply.code(400).send({ error: "invalid_request" });
