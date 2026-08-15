@@ -67,11 +67,10 @@ function assertOidcIssuer(value: string): void {
     url.username ||
     url.password ||
     url.search ||
-    url.hash ||
-    value !== url.toString()
+    url.hash
   ) {
     throw new Error(
-      "MINO_ADMIN_JWT_ISSUERS_JSON issuer must be a canonical HTTPS URL without credentials, query, or fragment",
+      "MINO_ADMIN_JWT_ISSUERS_JSON issuer must be an HTTPS URL without credentials, query, or fragment",
     );
   }
 }
