@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { AgentRequestAuthenticationError } from "../modules/agents/agent-request-verifier.js";
+import { AgentRequestError } from "../modules/agents/agent-request-verifier.js";
+import { MandateTokenError } from "../modules/mandates/mandate-token.service.js";
 import {
   CheckoutLifecycleProxyService,
   type MutatingCheckoutLifecycleInput,
@@ -101,15 +102,21 @@ export async function registerACPLifecycleRoutes(
 }
 
 function securityContext(request: FastifyRequest): ProxySecurityContext {
+  const authorization = requiredHeader(request, "authorization");
+  if (!/^Bearer\s+\S+$/i.test(authorization)) {
+    throw new ProxyAuthenticationError("ACP Authorization header must use Bearer authentication");
+  }
+
   return {
     mandateToken: requiredHeader(request, "x-mino-mandate-token"),
     agentProof: {
+      agentId: requiredHeader(request, "x-mino-agent-id"),
       keyId: requiredHeader(request, "x-mino-agent-key-id"),
       timestamp: requiredHeader(request, "x-mino-agent-timestamp"),
       nonce: requiredHeader(request, "x-mino-agent-nonce"),
       signature: requiredHeader(request, "x-mino-agent-signature"),
     },
-    authorization: requiredHeader(request, "authorization"),
+    authorization,
     apiVersion: requiredHeader(request, "api-version"),
   };
 }
@@ -122,33 +129,15 @@ function requiredHeader(request: FastifyRequest, name: string): string {
   if (Array.isArray(value) && value[0]?.trim()) {
     return value[0].trim();
   }
-  throw new ProxyAuthenticationError(`Missing required header ${name}`);
+  throw new ProxyAuthenticationError(`Missing required header: ${name}`);
 }
 
 function serializeDecision(decision: CheckoutProxyResult["decision"]) {
-  return {
-    decision_id: decision.decisionId,
-    mandate_id: decision.mandateId,
-    policy_version: decision.policyVersion,
-    verdict: decision.verdict,
-    reasons: decision.reasons,
-    requested_amount: {
-      currency: decision.requestedAmount.currency,
-      minor_units: decision.requestedAmount.minorUnits.toString(10),
-    },
-    policy_amount: {
-      currency: decision.policyAmount.currency,
-      minor_units: decision.policyAmount.minorUnits.toString(10),
-    },
-    ...(decision.approvedAmount
-      ? {
-          approved_amount: {
-            currency: decision.approvedAmount.currency,
-            minor_units: decision.approvedAmount.minorUnits.toString(10),
-          },
-        }
-      : {}),
-  };
+  return JSON.parse(
+    JSON.stringify(decision, (_key, value) =>
+      typeof value === "bigint" ? value.toString(10) : value,
+    ),
+  );
 }
 
 function sendLifecycleResult(reply: FastifyReply, result: CheckoutProxyResult) {
@@ -161,18 +150,31 @@ function sendLifecycleResult(reply: FastifyReply, result: CheckoutProxyResult) {
 }
 
 function sendLifecycleError(reply: FastifyReply, error: unknown) {
-  if (error instanceof ProxyProtocolError) {
-    return reply.code(400).send({ error: "protocol_error", message: error.message });
-  }
-  if (error instanceof ProxyAuthenticationError || error instanceof AgentRequestAuthenticationError) {
-    return reply.code(401).send({ error: "authentication_error", message: error.message });
-  }
-  if (error instanceof ProxyUpstreamError) {
-    return reply.code(error.status).send({
-      error: "upstream_failure",
-      message: error.message,
-      upstream: error.upstreamBody,
+  if (
+    error instanceof ProxyAuthenticationError ||
+    error instanceof MandateTokenError ||
+    error instanceof AgentRequestError
+  ) {
+    return reply.code(401).send({
+      error: "UNAUTHORIZED",
+      reason:
+        error instanceof MandateTokenError || error instanceof AgentRequestError
+          ? error.code
+          : error.message,
     });
   }
-  throw error;
+  if (error instanceof ProxyProtocolError) {
+    return reply.code(400).send({
+      error: "PROTOCOL_ERROR",
+      reason: error.message,
+    });
+  }
+  if (error instanceof ProxyUpstreamError) {
+    return reply.code(502).send({
+      error: "UPSTREAM_ERROR",
+      upstream_status: error.status,
+    });
+  }
+  console.error(error instanceof Error ? error.message : "Unknown Mino lifecycle proxy error");
+  return reply.code(500).send({ error: "INTERNAL_ERROR" });
 }
