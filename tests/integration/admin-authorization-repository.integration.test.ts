@@ -57,7 +57,7 @@ integration("Prisma admin authorization repository", () => {
           membershipId: membership.id,
           organizationId,
           status: "ACTIVE",
-          roles: ["AUDITOR", "FINANCE_MANAGER"],
+          roles: ["FINANCE_MANAGER", "AUDITOR"],
         },
       });
     } finally {
