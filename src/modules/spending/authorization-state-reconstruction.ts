@@ -6,6 +6,7 @@ import type {
   RedisScriptClient,
 } from "./authorization-reservation.service.js";
 
+const MAX_SAFE_MINOR_UNITS = BigInt(Number.MAX_SAFE_INTEGER);
 const DEFAULT_ROLLING_WINDOW_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_RECONCILIATION_HOLD_MS = 26 * 60 * 60 * 1000;
 const DEFAULT_DETAIL_TTL_MS = 50 * 60 * 60 * 1000;
@@ -216,28 +217,34 @@ export class RedisAuthorizationStateReconstructor {
           where "mandateId" = $1::uuid
             and "createdAt" >= $2
          union all
-         select distinct on (coalesce(a."reservationId", a."requestId"::text))
-                a."merchantDomain",
-                'audit:' || coalesce(a."reservationId", a."requestId"::text) as "sourceId",
-                a."timestamp" as "occurredAt"
-           from "AuditLog" a
-          where a."mandateId" = $1::uuid
-            and a."operation" = 'COMPLETE_CHECKOUT'
-            and a."timestamp" >= $2
-            and (
-              a."reservationId" is null
-              or not exists (
-                select 1
-                  from "PaymentOutcome" p
-                 where p."reservationId" = a."reservationId"
-              )
-            )
-          order by coalesce(a."reservationId", a."requestId"::text), a."timestamp" asc`,
+         select audit_attempt."merchantDomain",
+                audit_attempt."sourceId",
+                audit_attempt."occurredAt"
+           from (
+             select distinct on (coalesce(a."reservationId", a."requestId"::text))
+                    a."merchantDomain",
+                    'audit:' || coalesce(a."reservationId", a."requestId"::text) as "sourceId",
+                    a."timestamp" as "occurredAt"
+               from "AuditLog" a
+              where a."mandateId" = $1::uuid
+                and a."operation" = 'COMPLETE_CHECKOUT'
+                and a."timestamp" >= $2
+                and (
+                  a."reservationId" is null
+                  or not exists (
+                    select 1
+                      from "PaymentOutcome" p
+                     where p."reservationId" = a."reservationId"
+                  )
+                )
+              order by coalesce(a."reservationId", a."requestId"::text), a."timestamp" asc
+           ) audit_attempt`,
         [mandateId, attemptCutoff],
       ),
     ]);
 
     const states: RestorableState[] = paymentStatesResult.rows.map((row) => {
+      const amountMinor = assertRedisSafeAmount(row.amountMinor, row.reservationId);
       if (row.status === "SUCCEEDED") {
         if (!row.resolvedAt) {
           throw new AuthorizationStateUnavailableError(
@@ -247,7 +254,7 @@ export class RedisAuthorizationStateReconstructor {
         return {
           kind: "COMMITTED",
           reservationId: row.reservationId,
-          amountMinor: row.amountMinor,
+          amountMinor,
           currency: row.currency.toUpperCase(),
           eventAt: row.resolvedAt.getTime(),
         };
@@ -255,7 +262,7 @@ export class RedisAuthorizationStateReconstructor {
       return {
         kind: "RESERVED",
         reservationId: row.reservationId,
-        amountMinor: row.amountMinor,
+        amountMinor,
         currency: row.currency.toUpperCase(),
         eventAt: now.getTime() + this.reconciliationHoldMs,
       };
@@ -389,6 +396,23 @@ export class ReconstructingAuthorizationReservations implements AuthorizationRes
       );
     }
   }
+}
+
+function assertRedisSafeAmount(value: string, reservationId: string): string {
+  let amount: bigint;
+  try {
+    amount = BigInt(value);
+  } catch {
+    throw new AuthorizationStateUnavailableError(
+      `Durable payment reservation ${reservationId} has an invalid amount`,
+    );
+  }
+  if (amount < 0n || amount > MAX_SAFE_MINOR_UNITS) {
+    throw new AuthorizationStateUnavailableError(
+      `Durable payment reservation ${reservationId} exceeds Redis exact-integer range`,
+    );
+  }
+  return amount.toString(10);
 }
 
 function canonicalizeMerchant(domain: string): string {
