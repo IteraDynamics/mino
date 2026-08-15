@@ -16,6 +16,7 @@ integration("production admin inventory HTTP surface", () => {
   let pool: Pool;
   const organizationId = randomUUID();
   const otherOrganizationId = randomUUID();
+  const organizationIds = [organizationId, otherOrganizationId];
   const principalId = randomUUID();
   const membershipId = randomUUID();
   const jwtKeys = generateKeyPairSync("rsa", { modulusLength: 2048 });
@@ -84,9 +85,16 @@ integration("production admin inventory HTTP surface", () => {
   });
 
   afterAll(async () => {
-    await pool.query(`delete from "Organization" where "id" = any($1::uuid[])`, [
-      [organizationId, otherOrganizationId],
+    await pool.query(`delete from "AgentIdentity" where "organizationId" = any($1::uuid[])`, [
+      organizationIds,
     ]);
+    await pool.query(`delete from "Policy" where "organizationId" = any($1::uuid[])`, [
+      organizationIds,
+    ]);
+    await pool.query(`delete from "MerchantEndpoint" where "organizationId" = any($1::uuid[])`, [
+      organizationIds,
+    ]);
+    await pool.query(`delete from "Organization" where "id" = any($1::uuid[])`, [organizationIds]);
     await pool.query(`delete from "AdminPrincipal" where "id" = $1`, [principalId]);
     await pool.end();
   });
