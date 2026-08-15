@@ -61,6 +61,13 @@ jobs:
       - name: Verify database migration status
         run: npm run prisma:migrate:status
 
+      - name: Verify migrated schema matches Prisma model
+        run: >-
+          npx prisma migrate diff
+          --exit-code
+          --from-config-datasource
+          --to-schema prisma/schema.prisma
+
       - name: Typecheck
         run: npm run typecheck
 
@@ -84,6 +91,16 @@ jobs:
           docker image inspect mino:ci --format '{{json .Config.Env}}' | jq -e 'all(.[]; contains("SECRET") | not)'
           docker run --rm --entrypoint sh mino:ci -ec 'test ! -d /app/node_modules/prisma && test ! -d /app/prisma'
           docker run --rm --entrypoint sh mino:migration-ci -ec 'test -d /app/node_modules/prisma && test -f /app/prisma/migrations/20260815050000_baseline/migration.sql'
+
+      - name: Run migration image with mounted datasource secret
+        run: |
+          database_secret="$(mktemp)"
+          printf '%s' "$DATABASE_URL" > "$database_secret"
+          chmod 0644 "$database_secret"
+          docker run --rm --network host \
+            -e DATABASE_URL_FILE=/run/secrets/database_url \
+            -v "$database_secret:/run/secrets/database_url:ro" \
+            mino:migration-ci
 
       - name: Validate hardened Compose runtime
         env:
