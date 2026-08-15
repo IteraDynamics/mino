@@ -1,5 +1,6 @@
 import "dotenv/config";
 import { randomUUID } from "node:crypto";
+import { loadAdminJwtIssuerConfiguration } from "./infrastructure/config/admin-jwt-config.js";
 import { loadAuditCheckpointRetentionConfig } from "./infrastructure/config/audit-checkpoint-retention-config.js";
 import { loadOperationalMetricsConfig } from "./infrastructure/config/operational-metrics-config.js";
 import { loadProductionConfig } from "./infrastructure/config/production-config.js";
@@ -9,10 +10,12 @@ import { createProductionApplication } from "./production/application.js";
 import { NonOverlappingWorkerLoop } from "./production/non-overlapping-worker-loop.js";
 
 const config = loadProductionConfig();
+const adminJwtIssuers = loadAdminJwtIssuerConfiguration();
 const auditCheckpointRetentionConfig = loadAuditCheckpointRetentionConfig();
 const operationalMetricsConfig = loadOperationalMetricsConfig();
 const production = await createProductionApplication(config, {
   auditCheckpointRetainer: new WebhookAuditCheckpointRetainer(auditCheckpointRetentionConfig),
+  ...(adminJwtIssuers.length > 0 ? { adminJwtIssuers } : {}),
   ...(operationalMetricsConfig ? { operationalMetrics: operationalMetricsConfig } : {}),
 });
 const auditCheckpointRetention = production.auditCheckpointRetention;
