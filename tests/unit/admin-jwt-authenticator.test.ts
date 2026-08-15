@@ -17,6 +17,14 @@ function rsaKeys(): { publicPem: string; privateKey: KeyObject } {
   };
 }
 
+function ecKeys(): { publicPem: string; privateKey: KeyObject } {
+  const pair = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  return {
+    publicPem: pair.publicKey.export({ type: "spki", format: "pem" }).toString(),
+    privateKey: pair.privateKey,
+  };
+}
+
 function ed25519Keys(): { publicPem: string; privateKey: KeyObject } {
   const pair = generateKeyPairSync("ed25519");
   return {
@@ -37,10 +45,17 @@ function jwt(input: {
   privateKey: KeyObject;
   keyId?: string;
   algorithm?: "RS256" | "EdDSA" | "ES256";
+  headerAlgorithm?: "RS256" | "EdDSA" | "ES256";
+  header?: Record<string, unknown>;
   payload?: Record<string, unknown>;
 }): string {
   const algorithm = input.algorithm ?? "RS256";
-  const header = encode({ alg: algorithm, kid: input.keyId ?? "admin-k1", typ: "JWT" });
+  const header = encode({
+    alg: input.headerAlgorithm ?? algorithm,
+    kid: input.keyId ?? "admin-k1",
+    typ: "JWT",
+    ...input.header,
+  });
   const payload = encode({
     iss: issuer,
     sub: "user-123",
@@ -53,7 +68,12 @@ function jwt(input: {
   const signature =
     algorithm === "EdDSA"
       ? sign(null, signingInput, input.privateKey)
-      : sign("RSA-SHA256", signingInput, input.privateKey);
+      : algorithm === "ES256"
+        ? sign("sha256", signingInput, {
+            key: input.privateKey,
+            dsaEncoding: "ieee-p1363",
+          })
+        : sign("RSA-SHA256", signingInput, input.privateKey);
   return `${header}.${payload}.${signature.toString("base64url")}`;
 }
 
@@ -71,6 +91,20 @@ describe("AdminJwtAuthenticator", () => {
 
     expect(
       authenticator.authenticateAuthorizationHeader(`Bearer ${jwt({ privateKey: keys.privateKey })}`),
+    ).toEqual({ authenticated: true, issuer, subject: "user-123" });
+  });
+
+  it("supports P-256/ES256 issuer keys", () => {
+    const keys = ecKeys();
+    const authenticator = new AdminJwtAuthenticator(
+      [issuerConfig("admin-ec", keys.publicPem)],
+      () => now,
+    );
+
+    expect(
+      authenticator.authenticateAuthorizationHeader(
+        `Bearer ${jwt({ privateKey: keys.privateKey, keyId: "admin-ec", algorithm: "ES256" })}`,
+      ),
     ).toEqual({ authenticated: true, issuer, subject: "user-123" });
   });
 
@@ -127,9 +161,29 @@ describe("AdminJwtAuthenticator", () => {
 
     expect(
       authenticator.authenticateAuthorizationHeader(
-        `Bearer ${jwt({ privateKey: keys.privateKey, algorithm: "ES256" })}`,
+        `Bearer ${jwt({ privateKey: keys.privateKey, headerAlgorithm: "ES256" })}`,
       ),
     ).toEqual({ authenticated: false, reason: "ALGORITHM_NOT_ALLOWED" });
+  });
+
+  it("rejects unsupported critical or unencoded-payload JOSE extensions", () => {
+    const keys = rsaKeys();
+    const authenticator = new AdminJwtAuthenticator(
+      [issuerConfig("admin-k1", keys.publicPem)],
+      () => now,
+    );
+
+    expect(
+      authenticator.authenticateAuthorizationHeader(
+        `Bearer ${jwt({ privateKey: keys.privateKey, header: { crit: ["custom"] } })}`,
+      ),
+    ).toEqual({ authenticated: false, reason: "TOKEN_MALFORMED" });
+
+    expect(
+      authenticator.authenticateAuthorizationHeader(
+        `Bearer ${jwt({ privateKey: keys.privateKey, header: { b64: false, crit: ["b64"] } })}`,
+      ),
+    ).toEqual({ authenticated: false, reason: "TOKEN_MALFORMED" });
   });
 
   it("rejects a token whose signature no longer covers the payload", () => {
@@ -184,6 +238,25 @@ describe("AdminJwtAuthenticator", () => {
     expect(
       authenticator.authenticateAuthorizationHeader(
         `Bearer ${jwt({ privateKey: keys.privateKey, payload: { aud: ["other", audience] } })}`,
+      ),
+    ).toMatchObject({ authenticated: true });
+  });
+
+  it("accepts finite fractional NumericDate claims", () => {
+    const keys = rsaKeys();
+    const authenticator = new AdminJwtAuthenticator(
+      [issuerConfig("admin-k1", keys.publicPem)],
+      () => now,
+      { clockSkewSeconds: 0 },
+    );
+    const nowSeconds = now.getTime() / 1_000;
+
+    expect(
+      authenticator.authenticateAuthorizationHeader(
+        `Bearer ${jwt({
+          privateKey: keys.privateKey,
+          payload: { iat: nowSeconds - 0.5, exp: nowSeconds + 0.5 },
+        })}`,
       ),
     ).toMatchObject({ authenticated: true });
   });
