@@ -134,7 +134,12 @@ export class CheckoutLifecycleProxyService {
     this.assertApiVersion(input.security.apiVersion);
     const mandate = await this.authenticate(input, method);
     const merchant = await this.resolveMerchant(mandate.organizationId, input.merchantId);
-    const decision = lifecycleAccessDecision(mandate, this.deps.generateId);
+    const decision = lifecycleAccessDecision(
+      mandate,
+      input.requestId,
+      input.now,
+      this.deps.generateId,
+    );
     const upstream = await forward(merchant, this.upstreamHeaders(input));
 
     await this.recordAudit({
@@ -265,19 +270,23 @@ export class CheckoutLifecycleProxyService {
 
 function lifecycleAccessDecision(
   mandate: AgentSpendMandate,
+  requestId: string,
+  now: Date,
   generateId: () => string,
 ): PolicyDecision {
   const zero = { currency: mandate.currency, minorUnits: 0n };
   return {
     decisionId: generateId(),
+    requestId,
     mandateId: mandate.id,
+    policyId: mandate.policyId,
     policyVersion: mandate.policyVersion,
     verdict: DecisionVerdict.ALLOW,
     reasons: [],
     requestedAmount: zero,
     policyAmount: zero,
     eligibleForDelegationAssertion: false,
-    evaluationStartedAtMicros: 0,
-    evaluationFinishedAtMicros: 0,
+    evaluationLatencyMicros: 0,
+    evaluatedAt: now,
   };
 }
