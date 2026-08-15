@@ -4,6 +4,7 @@ import { loadAdminJwtIssuerConfiguration } from "./infrastructure/config/admin-j
 import { loadAuditCheckpointRetentionConfig } from "./infrastructure/config/audit-checkpoint-retention-config.js";
 import { loadOperationalMetricsConfig } from "./infrastructure/config/operational-metrics-config.js";
 import { loadProductionConfig } from "./infrastructure/config/production-config.js";
+import { WebhookAdminAuditCheckpointRetainer } from "./modules/admin/admin-audit-checkpoint-retention.js";
 import { WebhookAuditCheckpointRetainer } from "./modules/audit/audit-checkpoint-retention.js";
 import { paymentReconciliationNeedsAttention } from "./modules/payments/payment-reconciliation-monitor.js";
 import { createProductionApplication } from "./production/application.js";
@@ -15,13 +16,17 @@ const auditCheckpointRetentionConfig = loadAuditCheckpointRetentionConfig();
 const operationalMetricsConfig = loadOperationalMetricsConfig();
 const production = await createProductionApplication(config, {
   auditCheckpointRetainer: new WebhookAuditCheckpointRetainer(auditCheckpointRetentionConfig),
+  adminAuditCheckpointRetainer: new WebhookAdminAuditCheckpointRetainer(
+    auditCheckpointRetentionConfig,
+  ),
   ...(adminJwtIssuers.length > 0 ? { adminJwtIssuers } : {}),
   ...(operationalMetricsConfig ? { operationalMetrics: operationalMetricsConfig } : {}),
 });
 const auditCheckpointRetention = production.auditCheckpointRetention;
-if (!auditCheckpointRetention) {
+const adminAuditCheckpointRetention = production.adminAuditCheckpointRetention;
+if (!auditCheckpointRetention || !adminAuditCheckpointRetention) {
   await production.close();
-  throw new Error("Audit checkpoint retention worker was not configured");
+  throw new Error("Audit checkpoint retention workers were not configured");
 }
 
 const approvalNotificationWorkerId = `approval-notify-${randomUUID()}`;
@@ -78,17 +83,41 @@ const auditCheckpointRetentionLoop = new NonOverlappingWorkerLoop({
     if (result.failed > 0) {
       production.app.log.warn(
         { auditCheckpointRetention: result },
-        "Signed audit checkpoints could not be retained externally",
+        "Signed transaction-audit checkpoints could not be retained externally",
       );
     } else if (result.delivered > 0) {
       production.app.log.info(
         { auditCheckpointRetention: result },
-        "Retained signed audit checkpoints externally",
+        "Retained signed transaction-audit checkpoints externally",
       );
     }
   },
   onError: (error) => {
-    production.app.log.error({ error }, "Audit checkpoint retention loop failed");
+    production.app.log.error({ error }, "Transaction-audit checkpoint retention loop failed");
+  },
+});
+
+const adminAuditCheckpointRetentionLoop = new NonOverlappingWorkerLoop({
+  intervalMs: 60_000,
+  run: async () => {
+    const result = await adminAuditCheckpointRetention.runOnce();
+    if (result.failed > 0) {
+      production.app.log.warn(
+        { adminAuditCheckpointRetention: result },
+        "Signed administrative-audit checkpoints could not be retained externally",
+      );
+    } else if (result.delivered > 0) {
+      production.app.log.info(
+        { adminAuditCheckpointRetention: result },
+        "Retained signed administrative-audit checkpoints externally",
+      );
+    }
+  },
+  onError: (error) => {
+    production.app.log.error(
+      { error },
+      "Administrative-audit checkpoint retention loop failed",
+    );
   },
 });
 
@@ -103,6 +132,7 @@ async function shutdown(signal: string): Promise<void> {
       approvalNotificationLoop.stop(),
       paymentReconciliationLoop.stop(),
       auditCheckpointRetentionLoop.stop(),
+      adminAuditCheckpointRetentionLoop.stop(),
     ]);
     await production.close();
     process.exitCode = 0;
@@ -127,12 +157,14 @@ try {
   approvalNotificationLoop.start();
   paymentReconciliationLoop.start();
   auditCheckpointRetentionLoop.start();
+  adminAuditCheckpointRetentionLoop.start();
 } catch (error) {
   production.app.log.error({ error }, "Mino failed to start");
   await Promise.all([
     approvalNotificationLoop.stop(),
     paymentReconciliationLoop.stop(),
     auditCheckpointRetentionLoop.stop(),
+    adminAuditCheckpointRetentionLoop.stop(),
   ]).catch(() => undefined);
   await production.close().catch(() => undefined);
   process.exitCode = 1;
