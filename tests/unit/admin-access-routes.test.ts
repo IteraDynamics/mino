@@ -55,6 +55,7 @@ describe("admin access routes", () => {
     expect(response.statusCode).toBe(401);
     expect(response.json()).toEqual({ error: "unauthorized" });
     expect(response.headers["www-authenticate"]).toBe('Bearer realm="mino-admin"');
+    expect(response.headers["cache-control"]).toBe("no-store");
     expect(authorizer.requests).toHaveLength(0);
     await app.close();
   });
@@ -83,6 +84,7 @@ describe("admin access routes", () => {
 
     expect(response.statusCode).toBe(403);
     expect(response.json()).toEqual({ error: "forbidden" });
+    expect(response.headers["cache-control"]).toBe("no-store");
     expect(authorizer.requests).toEqual([
       {
         issuer: "https://login.example/",
@@ -120,6 +122,7 @@ describe("admin access routes", () => {
     });
 
     expect(response.statusCode).toBe(200);
+    expect(response.headers["cache-control"]).toBe("no-store");
     const body = response.json();
     expect(body).toMatchObject({
       principalId: "principal-1",
@@ -157,6 +160,7 @@ describe("admin access routes", () => {
 
     expect(response.statusCode).toBe(400);
     expect(response.json()).toEqual({ error: "invalid_request" });
+    expect(response.headers["cache-control"]).toBe("no-store");
     expect(authorizer.requests).toHaveLength(0);
     await app.close();
   });
