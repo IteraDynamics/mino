@@ -8,7 +8,9 @@ import type {
 /**
  * Removes only stale RESERVED idempotency results before the normal reservation
  * engine evaluates the request. Active reservations continue to replay exactly as
- * before; expired reservations are re-evaluated against current spend/velocity.
+ * before; expired matching retries are re-evaluated against current spend/velocity.
+ * A changed request digest is never cleared, preserving the full idempotency-conflict
+ * window even after the original reservation expires.
  *
  * The guard uses the same mandate-local Redis Cluster hash slot as the reservation
  * engine. Request time is supplied by the caller so the stale check and the
@@ -28,7 +30,7 @@ export class ExpiryAwareAuthorizationReservations implements AuthorizationReserv
         `${base}:reservations`,
         `${base}:idem:${encodeURIComponent(input.idempotencyKey)}`,
       ],
-      arguments: [String(input.now.getTime())],
+      arguments: [String(input.now.getTime()), input.requestDigest],
     });
     return this.inner.tryReserve(input);
   }
@@ -60,12 +62,16 @@ export class ExpiryAwareAuthorizationReservations implements AuthorizationReserv
 
 export const CLEAR_STALE_RESERVED_IDEMPOTENCY_SCRIPT = String.raw`
 local now = tonumber(ARGV[1])
+local request_digest = ARGV[2]
 local existing_raw = redis.call('GET', KEYS[2])
 if not existing_raw then
   return 0
 end
 
 local existing = cjson.decode(existing_raw)
+if existing.request_digest ~= request_digest then
+  return 0
+end
 if existing.status ~= 'RESERVED' or not existing.reservation_id then
   return 0
 end
