@@ -39,6 +39,7 @@ import {
   ReconstructingAuthorizationReservations,
   RedisAuthorizationStateReconstructor,
 } from "../modules/spending/authorization-state-reconstruction.js";
+import { ExpiryAwareAuthorizationReservations } from "../modules/spending/expiry-aware-authorization-reservations.js";
 import { PostgresSpendReservationStore } from "../modules/spending/postgres-spend-reservation.store.js";
 import type { ProductionConfig } from "../infrastructure/config/production-config.js";
 import {
@@ -127,6 +128,10 @@ export async function createProductionApplication(
     );
     const redisAuthorization = new RedisAuthorizationScriptClient(redis);
     const rawReservations = new AuthorizationReservationService(redisAuthorization);
+    const expiryAwareReservations = new ExpiryAwareAuthorizationReservations(
+      rawReservations,
+      redisAuthorization,
+    );
     const durableReservations = new PostgresSpendReservationStore(sql);
     const authorizationStateReconstructor = new RedisAuthorizationStateReconstructor(
       sql,
@@ -134,7 +139,7 @@ export async function createProductionApplication(
     );
     await authorizationStateReconstructor.reconstructAll(clock());
     const reservations = new ReconstructingAuthorizationReservations(
-      rawReservations,
+      expiryAwareReservations,
       authorizationStateReconstructor,
       clock,
       durableReservations,
