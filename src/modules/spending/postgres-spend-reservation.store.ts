@@ -105,7 +105,16 @@ export class PostgresSpendReservationStore implements DurableSpendReservationSto
               "releasedAt" = null,
               "expiresAt" = excluded."expiresAt"
         where "SpendReservation"."status" in ('RELEASED', 'EXPIRED')
-           or "SpendReservation"."id" = excluded."id"
+           or (
+             "SpendReservation"."status" = 'RESERVED'
+             and "SpendReservation"."id" = excluded."id"
+             and "SpendReservation"."userId" = excluded."userId"
+             and "SpendReservation"."agentId" = excluded."agentId"
+             and "SpendReservation"."mandateId" = excluded."mandateId"
+             and "SpendReservation"."merchantDomain" = excluded."merchantDomain"
+             and "SpendReservation"."currency" = excluded."currency"
+             and "SpendReservation"."amountMinor" = excluded."amountMinor"
+           )
       returning *`,
       [
         input.id,
