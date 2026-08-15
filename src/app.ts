@@ -1,12 +1,15 @@
 import Fastify, { type FastifyInstance } from "fastify";
+import { registerACPLifecycleRoutes } from "./api/acp-lifecycle.routes.js";
 import { registerACPRoutes } from "./api/acp.routes.js";
 import { registerApprovalRoutes } from "./api/approval.routes.js";
 import type { HumanApprovalService } from "./modules/approvals/durable-approval.service.js";
 import type { ApprovalResolutionAuthenticator } from "./modules/approvals/approval-resolution-authenticator.js";
+import type { CheckoutLifecycleProxyService } from "./modules/proxy/checkout-lifecycle-proxy.service.js";
 import type { CheckoutProxyService } from "./modules/proxy/checkout-proxy.service.js";
 
 export interface CreateAppOptions {
   readonly proxy: CheckoutProxyService;
+  readonly lifecycleProxy?: CheckoutLifecycleProxyService;
   readonly approvals?: HumanApprovalService;
   readonly approvalAuthenticator?: ApprovalResolutionAuthenticator;
   readonly logger?: boolean;
@@ -21,6 +24,12 @@ export async function createApp(options: CreateAppOptions): Promise<FastifyInsta
     proxy: options.proxy,
     ...(options.now ? { now: options.now } : {}),
   });
+  if (options.lifecycleProxy) {
+    await registerACPLifecycleRoutes(app, {
+      lifecycleProxy: options.lifecycleProxy,
+      ...(options.now ? { now: options.now } : {}),
+    });
+  }
 
   if (options.approvals || options.approvalAuthenticator) {
     if (!options.approvals || !options.approvalAuthenticator) {

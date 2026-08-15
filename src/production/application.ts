@@ -28,6 +28,7 @@ import { PaymentReconciliationMonitor } from "../modules/payments/payment-reconc
 import { PostgresPaymentOutcomeStore } from "../modules/payments/payment-outcome.store.js";
 import { PolicyEvaluator } from "../modules/policy/policy-evaluator.js";
 import { ACPAdapter } from "../modules/proxy/acp-adapter.js";
+import { CheckoutLifecycleProxyService } from "../modules/proxy/checkout-lifecycle-proxy.service.js";
 import { CheckoutProxyService } from "../modules/proxy/checkout-proxy.service.js";
 import { DelegationAssertionService } from "../modules/proxy/delegation-assertion.service.js";
 import {
@@ -192,8 +193,25 @@ export async function createProductionApplication(
       generateId,
     });
 
+    const lifecycleProxy = merchantClient.updateCheckout
+      ? new CheckoutLifecycleProxyService({
+          mandateTokens,
+          mandates,
+          agentRequests,
+          merchants,
+          merchantClient: {
+            getCheckout: merchantClient.getCheckout.bind(merchantClient),
+            updateCheckout: merchantClient.updateCheckout.bind(merchantClient),
+            cancelCheckout: merchantClient.cancelCheckout.bind(merchantClient),
+          },
+          audit,
+          generateId,
+        })
+      : undefined;
+
     app = await createApp({
       proxy,
+      ...(lifecycleProxy ? { lifecycleProxy } : {}),
       approvals,
       approvalAuthenticator,
       logger: overrides.logger ?? true,
