@@ -1,4 +1,4 @@
-import type { FastifyInstance, FastifyRequest } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { AgentRequestAuthenticationError } from "../modules/agents/agent-request-verifier.js";
 import {
   CheckoutLifecycleProxyService,
@@ -9,6 +9,7 @@ import {
   ProxyAuthenticationError,
   ProxyProtocolError,
   ProxyUpstreamError,
+  type CheckoutProxyResult,
   type ProxySecurityContext,
 } from "../modules/proxy/checkout-proxy.service.js";
 
@@ -124,16 +125,7 @@ function requiredHeader(request: FastifyRequest, name: string): string {
   throw new ProxyAuthenticationError(`Missing required header ${name}`);
 }
 
-function serializeDecision(decision: {
-  readonly decisionId: string;
-  readonly mandateId: string;
-  readonly policyVersion: number;
-  readonly verdict: string;
-  readonly reasons: readonly string[];
-  readonly requestedAmount: { readonly currency: string; readonly minorUnits: bigint };
-  readonly policyAmount: { readonly currency: string; readonly minorUnits: bigint };
-  readonly approvedAmount?: { readonly currency: string; readonly minorUnits: bigint };
-}) {
+function serializeDecision(decision: CheckoutProxyResult["decision"]) {
   return {
     decision_id: decision.decisionId,
     mandate_id: decision.mandateId,
@@ -159,10 +151,7 @@ function serializeDecision(decision: {
   };
 }
 
-function sendLifecycleResult(
-  reply: Parameters<FastifyInstance["get"]>[1] extends never ? never : any,
-  result: Awaited<ReturnType<CheckoutLifecycleProxyService["retrieveCheckout"]>>,
-) {
+function sendLifecycleResult(reply: FastifyReply, result: CheckoutProxyResult) {
   const status = result.upstream?.status ?? 200;
   return reply.code(status).send({
     decision: serializeDecision(result.decision),
@@ -171,7 +160,7 @@ function sendLifecycleResult(
   });
 }
 
-function sendLifecycleError(reply: any, error: unknown) {
+function sendLifecycleError(reply: FastifyReply, error: unknown) {
   if (error instanceof ProxyProtocolError) {
     return reply.code(400).send({ error: "protocol_error", message: error.message });
   }
