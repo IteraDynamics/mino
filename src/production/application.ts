@@ -5,6 +5,11 @@ import { Pool } from "pg";
 import { createClient } from "redis";
 import { PrismaClient } from "../generated/prisma/client.js";
 import { createApp } from "../app.js";
+import { AdminAuthorizer } from "../modules/admin/admin-authorizer.js";
+import {
+  AdminJwtAuthenticator,
+  type AdminJwtIssuerConfig,
+} from "../modules/admin/admin-jwt-authenticator.js";
 import { AgentRequestVerifier } from "../modules/agents/agent-request-verifier.js";
 import { HmacApprovalResolutionAuthenticator } from "../modules/approvals/approval-resolution-authenticator.js";
 import {
@@ -50,6 +55,7 @@ import {
 } from "../infrastructure/crypto/static-key-providers.js";
 import { StaticMerchantCredentialProvider } from "../infrastructure/merchant/static-merchant-credential-provider.js";
 import { PgSqlAdapter } from "../infrastructure/postgres/pg-sql-adapter.js";
+import { PrismaAdminAuthorizationContextRepository } from "../infrastructure/prisma/admin-authorization.repository.js";
 import {
   PrismaAgentVerificationKeyResolver,
   PrismaMandateRepository,
@@ -66,6 +72,7 @@ export interface ProductionApplicationOverrides {
   readonly merchantClient?: ACPMerchantClient;
   readonly auditCheckpointRetainer?: AuditCheckpointRetainer;
   readonly operationalMetrics?: OperationalMetricsConfig;
+  readonly adminJwtIssuers?: readonly AdminJwtIssuerConfig[];
   readonly generateId?: () => string;
   readonly now?: () => Date;
   readonly logger?: boolean;
@@ -79,11 +86,16 @@ export interface ProductionApplication {
   readonly auditCheckpointRetention?: AuditCheckpointRetentionWorker;
   readonly authorizationStateReconstructor: RedisAuthorizationStateReconstructor;
   readonly auditVerifier: PostgresAuditVerifier;
+  readonly adminAccess?: {
+    readonly authenticator: AdminJwtAuthenticator;
+    readonly authorizer: AdminAuthorizer;
+  };
   readonly repositories: {
     readonly mandates: PrismaMandateRepository;
     readonly merchants: PrismaMerchantRegistry;
     readonly policies: PrismaPolicyRepository;
     readonly agentKeys: PrismaAgentVerificationKeyResolver;
+    readonly adminAuthorization: PrismaAdminAuthorizationContextRepository;
   };
   readiness(): Promise<boolean>;
   close(): Promise<void>;
@@ -121,6 +133,13 @@ export async function createProductionApplication(
     const merchants = new PrismaMerchantRegistry(prisma);
     const policies = new PrismaPolicyRepository(prisma);
     const agentKeys = new PrismaAgentVerificationKeyResolver(prisma);
+    const adminAuthorization = new PrismaAdminAuthorizationContextRepository(prisma);
+    const adminAccess = overrides.adminJwtIssuers?.length
+      ? {
+          authenticator: new AdminJwtAuthenticator(overrides.adminJwtIssuers, clock),
+          authorizer: new AdminAuthorizer(adminAuthorization),
+        }
+      : undefined;
 
     const mandateTokens = new MandateTokenService(
       new StaticMandateVerificationKeyResolver(config.mandateVerificationKeys),
@@ -220,6 +239,7 @@ export async function createProductionApplication(
       ...(lifecycleProxy ? { lifecycleProxy } : {}),
       approvals,
       approvalAuthenticator,
+      ...(adminAccess ? { adminAccess } : {}),
       ...(operationalMetrics && overrides.operationalMetrics
         ? {
             metrics: {
@@ -272,7 +292,8 @@ export async function createProductionApplication(
       ...(auditCheckpointRetention ? { auditCheckpointRetention } : {}),
       authorizationStateReconstructor,
       auditVerifier,
-      repositories: { mandates, merchants, policies, agentKeys },
+      ...(adminAccess ? { adminAccess } : {}),
+      repositories: { mandates, merchants, policies, agentKeys, adminAuthorization },
       readiness,
       async close(): Promise<void> {
         if (closed) {
