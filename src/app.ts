@@ -1,6 +1,10 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import { registerACPLifecycleRoutes } from "./api/acp-lifecycle.routes.js";
 import { registerACPRoutes } from "./api/acp.routes.js";
+import {
+  registerAdminAccessRoutes,
+  type AdminAccessRouteDependencies,
+} from "./api/admin-access.routes.js";
 import { registerApprovalRoutes } from "./api/approval.routes.js";
 import {
   registerMetricsRoute,
@@ -16,6 +20,7 @@ export interface CreateAppOptions {
   readonly lifecycleProxy?: CheckoutLifecycleProxyService;
   readonly approvals?: HumanApprovalService;
   readonly approvalAuthenticator?: ApprovalResolutionAuthenticator;
+  readonly adminAccess?: AdminAccessRouteDependencies;
   readonly metrics?: MetricsRouteDependencies;
   readonly logger?: boolean;
   readonly now?: () => Date;
@@ -45,6 +50,10 @@ export async function createApp(options: CreateAppOptions): Promise<FastifyInsta
       authenticator: options.approvalAuthenticator,
       ...(options.now ? { now: options.now } : {}),
     });
+  }
+
+  if (options.adminAccess) {
+    await registerAdminAccessRoutes(app, options.adminAccess);
   }
 
   if (options.metrics) {
