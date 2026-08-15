@@ -6,6 +6,12 @@ import { createClient } from "redis";
 import { PrismaClient } from "../generated/prisma/client.js";
 import { createApp } from "../app.js";
 import {
+  AdminAuditCheckpointRetentionWorker,
+  PostgresAdminAuditCheckpointIssuer,
+  PostgresRetainedAdminAuditVerifier,
+  type AdminAuditCheckpointRetainer,
+} from "../modules/admin/admin-audit-checkpoint-retention.js";
+import {
   PostgresAdminChangeAuditLedger,
   PostgresAdminChangeAuditVerifier,
 } from "../modules/admin/admin-change-audit-ledger.js";
@@ -76,6 +82,7 @@ import { PostgresOperationalMetrics } from "../operations/postgres-operational-m
 export interface ProductionApplicationOverrides {
   readonly merchantClient?: ACPMerchantClient;
   readonly auditCheckpointRetainer?: AuditCheckpointRetainer;
+  readonly adminAuditCheckpointRetainer?: AdminAuditCheckpointRetainer;
   readonly operationalMetrics?: OperationalMetricsConfig;
   readonly adminJwtIssuers?: readonly AdminJwtIssuerConfig[];
   readonly generateId?: () => string;
@@ -89,10 +96,12 @@ export interface ProductionApplication {
   readonly reconciliationMonitor: PaymentReconciliationMonitor;
   readonly approvalNotifications: ApprovalNotificationOutboxWorker;
   readonly auditCheckpointRetention?: AuditCheckpointRetentionWorker;
+  readonly adminAuditCheckpointRetention?: AdminAuditCheckpointRetentionWorker;
   readonly authorizationStateReconstructor: RedisAuthorizationStateReconstructor;
   readonly auditVerifier: PostgresAuditVerifier;
   readonly adminAudit: PostgresAdminChangeAuditLedger;
   readonly adminAuditVerifier: PostgresAdminChangeAuditVerifier;
+  readonly retainedAdminAuditVerifier: PostgresRetainedAdminAuditVerifier;
   readonly adminAccess?: {
     readonly authenticator: AdminJwtAuthenticator;
     readonly authorizer: AdminAuthorizer;
@@ -199,8 +208,21 @@ export async function createProductionApplication(
     const auditVerifier = new PostgresAuditVerifier(sql, auditKeys);
     const adminAudit = new PostgresAdminChangeAuditLedger(sql, auditKeys);
     const adminAuditVerifier = new PostgresAdminChangeAuditVerifier(sql, auditKeys);
+    const adminAuditCheckpointIssuer = new PostgresAdminAuditCheckpointIssuer(sql, auditKeys);
+    const retainedAdminAuditVerifier = new PostgresRetainedAdminAuditVerifier(
+      sql,
+      adminAuditVerifier,
+      auditKeys,
+    );
     const auditCheckpointRetention = overrides.auditCheckpointRetainer
       ? new AuditCheckpointRetentionWorker(sql, audit, overrides.auditCheckpointRetainer)
+      : undefined;
+    const adminAuditCheckpointRetention = overrides.adminAuditCheckpointRetainer
+      ? new AdminAuditCheckpointRetentionWorker(
+          sql,
+          adminAuditCheckpointIssuer,
+          overrides.adminAuditCheckpointRetainer,
+        )
       : undefined;
     const merchantClient = overrides.merchantClient ?? new FetchACPMerchantClient();
     const proxy = new CheckoutProxyService({
@@ -309,10 +331,12 @@ export async function createProductionApplication(
       reconciliationMonitor,
       approvalNotifications,
       ...(auditCheckpointRetention ? { auditCheckpointRetention } : {}),
+      ...(adminAuditCheckpointRetention ? { adminAuditCheckpointRetention } : {}),
       authorizationStateReconstructor,
       auditVerifier,
       adminAudit,
       adminAuditVerifier,
+      retainedAdminAuditVerifier,
       ...(adminAccess ? { adminAccess } : {}),
       repositories: {
         mandates,

@@ -34,6 +34,7 @@ Mino is a policy, authorization, approval, and security control plane for agenti
 28. **Cryptographically authenticated admin ingress** — optional administrative HTTP routes verify pinned-issuer Bearer JWTs with strict issuer/audience/subject/time/key/algorithm checks, then independently require the exact organization-local Mino permission. Invalid authentication and valid-but-unauthorized identities remain separate 401/403 boundaries.
 29. **Permissioned administrative inventory** — authenticated administrators can page through only the agents, policies, and merchants visible inside an authorized organization. Policy `BIGINT` monetary values remain exact minor-unit strings, and list projections omit agent public-key material and internal merchant upstream URLs.
 30. **Atomic administrative change audit foundation** — successful future admin mutations can use one PostgreSQL transaction to commit both the governed state change and a separately sequenced Ed25519-signed administrative change receipt. Before/after snapshots are defensively redacted before hashing or persistence, and a verifier detects mutation, gaps, broken links, signature corruption, and disagreement with the durable chain head.
+31. **Independent administrative-audit checkpoint retention** — signed administrative chain-head checkpoints are exported to the separate HTTPS/HMAC retention boundary with admin-specific stable event IDs. A retained checkpoint can detect coherent PostgreSQL suffix deletion even when an attacker rewinds the mutable local admin chain head to make the shortened database internally consistent.
 
 ## ACP trust boundary
 
@@ -87,7 +88,9 @@ Administrative change auditing has its own per-organization chain and does not s
 
 Each committed receipt snapshots the authorized principal and membership IDs, role set, permission, action/resource identity, request digest, timestamp, and sanitized before/after state. Principal and membership IDs are stored as historical scalar facts rather than cascading foreign keys, so later removal of an administrator cannot cascade-delete the change record.
 
-The verifier detects row mutation, sequence gaps, broken prior-digest links, event/chain digest mismatch, invalid or unknown historical signing keys, signature corruption, and a newest-row deletion while the stored chain head remains ahead. This is still **tamper-evident**, not magically immutable: unlike the existing transaction audit chain, administrative audit checkpoints are not yet exported to a separate trust domain. See `docs/admin-change-audit.md`.
+The database verifier detects row mutation, sequence gaps, broken prior-digest links, event/chain digest mismatch, invalid or unknown historical signing keys, signature corruption, and a newest-row deletion while the stored chain head remains ahead. Signed administrative chain-head checkpoints are also exported to the independently operated audit-retention boundary. The retained-checkpoint verifier can therefore detect a coherent database rewind where the newest audit rows and the mutable local head are both rewritten to agree with the shortened database.
+
+Administrative and transaction audit keep independent sequence spaces, signature domains, and retention event types while sharing the configured audit signing-key history and external HTTPS/HMAC retention credential. External delivery is at-least-once with stable event IDs; the receiver must durably deduplicate accepted proofs. The combined design remains **tamper-evident**, not magically immutable: an attacker who controls both PostgreSQL and the independent retention trust domain remains inside both boundaries. See `docs/admin-change-audit.md` and `docs/admin-audit-checkpoint-retention.md`.
 
 ## Human approval invariants
 
@@ -185,4 +188,4 @@ The GitHub verification gate additionally builds the runtime and migration conta
 
 ## Next implementation slice
 
-The next hardening slice is **independent retention of signed administrative-audit checkpoints**, extending the separate-trust-domain protection already used for transaction audit. Once that boundary is proven, Mino can begin exposing narrowly permissioned administrative mutation APIs using the atomic state-change + signed-audit transaction pattern rather than adding writes that can succeed without an independently anchorable administrative receipt.
+The next product slice is the first **narrowly permissioned administrative mutation API**, using the #18 authenticated human ingress, #17 organization-local RBAC, #20 atomic state-change + signed-audit transaction primitive, and #21 independently retained administrative checkpoints. The first write should remain deliberately low blast radius—agent enrollment is a strong candidate because creating an agent identity alone does not grant spending authority; a valid mandate is still required before the agent can transact.
