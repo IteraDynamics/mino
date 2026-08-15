@@ -23,7 +23,12 @@ RUN DATABASE_URL=postgresql://mino:build-only@127.0.0.1:5432/mino \
  && npm run build
 
 FROM build AS production-deps
-RUN npm prune --omit=dev
+# npm peer/dependency resolution may retain the Prisma CLI package after a
+# production prune. The long-running runtime has no schema-management authority,
+# so remove the CLI and its executable explicitly after pruning. Generated
+# Prisma client/runtime dependencies remain intact.
+RUN npm prune --omit=dev \
+ && rm -rf node_modules/prisma node_modules/.bin/prisma
 
 FROM node:22.23.2-bookworm-slim AS runtime
 WORKDIR /app
