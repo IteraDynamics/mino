@@ -133,7 +133,7 @@ export class CheckoutLifecycleProxyService {
   ): Promise<CheckoutProxyResult> {
     this.assertApiVersion(input.security.apiVersion);
     const mandate = await this.authenticate(input, method);
-    const merchant = await this.resolveMerchant(mandate.organizationId, input.merchantId);
+    const merchant = await this.resolveMerchant(mandate, input.merchantId);
     const decision = lifecycleAccessDecision(
       mandate,
       input.requestId,
@@ -177,6 +177,7 @@ export class CheckoutLifecycleProxyService {
       throw new ProxyAuthenticationError("Mandate does not exist");
     }
     this.deps.mandateTokens.assertBoundToMandate(verified, mandate);
+    assertMandateUsable(mandate, input.now);
 
     await this.deps.agentRequests.verify({
       method,
@@ -194,10 +195,10 @@ export class CheckoutLifecycleProxyService {
   }
 
   private async resolveMerchant(
-    organizationId: string,
+    mandate: AgentSpendMandate,
     merchantId: string,
   ): Promise<MerchantEndpoint> {
-    const merchant = await this.deps.merchants.getById(organizationId, merchantId);
+    const merchant = await this.deps.merchants.getById(mandate.organizationId, merchantId);
     if (!merchant || !merchant.active) {
       throw new ProxyAuthenticationError("Merchant endpoint is not registered or active");
     }
@@ -205,6 +206,9 @@ export class CheckoutLifecycleProxyService {
       assertRegisteredHttpsTarget(merchant);
     } catch {
       throw new ProxyAuthenticationError("Merchant endpoint failed registered HTTPS validation");
+    }
+    if (!isMerchantApprovedForMandate(mandate, merchant)) {
+      throw new ProxyAuthenticationError("Merchant is outside the active mandate scope");
     }
     return merchant;
   }
@@ -289,4 +293,41 @@ function lifecycleAccessDecision(
     evaluationLatencyMicros: 0,
     evaluatedAt: now,
   };
+}
+
+function assertMandateUsable(mandate: AgentSpendMandate, now: Date): void {
+  if (mandate.revokedAt && mandate.revokedAt <= now) {
+    throw new ProxyAuthenticationError("Mandate is revoked");
+  }
+  if (now >= mandate.expiresAt) {
+    throw new ProxyAuthenticationError("Mandate is expired");
+  }
+}
+
+export function isMerchantApprovedForMandate(
+  mandate: AgentSpendMandate,
+  merchant: Pick<MerchantEndpoint, "domain" | "vendorId">,
+): boolean {
+  const actualDomain = canonicalizeDomain(merchant.domain);
+  const domainApproved = mandate.approvedMerchantDomains.some((approved) =>
+    domainMatches(actualDomain, canonicalizeDomain(approved)),
+  );
+  const vendorApproved =
+    merchant.vendorId !== undefined && mandate.approvedVendorIds.includes(merchant.vendorId);
+  return domainApproved || vendorApproved;
+}
+
+function canonicalizeDomain(domain: string): string {
+  const value = domain.trim().toLowerCase().replace(/\.$/, "");
+  if (value.includes("://") || value.includes("/") || value.includes("@")) {
+    return "";
+  }
+  return value;
+}
+
+function domainMatches(actual: string, approved: string): boolean {
+  if (!actual || !approved) {
+    return false;
+  }
+  return actual === approved || actual.endsWith(`.${approved}`);
 }
