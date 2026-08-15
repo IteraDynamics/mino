@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { PrismaClient } from "../../src/generated/prisma/client.js";
@@ -7,9 +8,11 @@ const integration = process.env.RUN_INTEGRATION_TESTS === "1" ? describe : descr
 const DATABASE_URL =
   process.env.DATABASE_URL ?? "postgresql://mino:mino@127.0.0.1:5432/mino?schema=public";
 
-const organizationId = "10000000-0000-4000-8000-000000000001";
-const otherOrganizationId = "10000000-0000-4000-8000-000000000002";
+const organizationId = randomUUID();
+const otherOrganizationId = randomUUID();
 const organizationIds = [organizationId, otherOrganizationId];
+const agentIds = [randomUUID(), randomUUID(), randomUUID()].sort();
+const otherAgentId = randomUUID();
 
 integration("Prisma admin inventory repository", () => {
   let prisma: PrismaClient;
@@ -30,7 +33,7 @@ integration("Prisma admin inventory repository", () => {
     await prisma.agentIdentity.createMany({
       data: [
         {
-          id: "20000000-0000-4000-8000-000000000001",
+          id: agentIds[0]!,
           organizationId,
           externalAgentId: "agent-a",
           displayName: "Agent A",
@@ -38,18 +41,18 @@ integration("Prisma admin inventory repository", () => {
           publicKey: "SECRET-PUBLIC-KEY-MATERIAL",
         },
         {
-          id: "20000000-0000-4000-8000-000000000002",
+          id: agentIds[1]!,
           organizationId,
           externalAgentId: "agent-b",
           status: "SUSPENDED",
         },
         {
-          id: "20000000-0000-4000-8000-000000000003",
+          id: agentIds[2]!,
           organizationId,
           externalAgentId: "agent-c",
         },
         {
-          id: "20000000-0000-4000-8000-000000000004",
+          id: otherAgentId,
           organizationId: otherOrganizationId,
           externalAgentId: "other-agent",
         },
@@ -59,7 +62,7 @@ integration("Prisma admin inventory repository", () => {
     await prisma.policy.createMany({
       data: [
         {
-          id: "30000000-0000-4000-8000-000000000001",
+          id: randomUUID(),
           organizationId,
           name: "Travel",
           version: 1,
@@ -71,7 +74,7 @@ integration("Prisma admin inventory repository", () => {
           approvalMode: "DUAL_SIGNATURE_SLACK",
         },
         {
-          id: "30000000-0000-4000-8000-000000000002",
+          id: randomUUID(),
           organizationId: otherOrganizationId,
           name: "Other policy",
           version: 1,
@@ -88,7 +91,7 @@ integration("Prisma admin inventory repository", () => {
     await prisma.merchantEndpoint.createMany({
       data: [
         {
-          id: "40000000-0000-4000-8000-000000000001",
+          id: randomUUID(),
           organizationId,
           externalMerchantId: "merchant-a",
           domain: "merchant-a.example",
@@ -96,7 +99,7 @@ integration("Prisma admin inventory repository", () => {
           baseUrl: "https://private-upstream.internal.example/acp",
         },
         {
-          id: "40000000-0000-4000-8000-000000000002",
+          id: randomUUID(),
           organizationId: otherOrganizationId,
           externalMerchantId: "other-merchant",
           domain: "other.example",
@@ -117,7 +120,7 @@ integration("Prisma admin inventory repository", () => {
   it("paginates agents deterministically inside one organization without exposing public keys", async () => {
     const first = await repository.listAgents({ organizationId, limit: 2 });
     expect(first.items.map((item) => item.externalAgentId)).toEqual(["agent-a", "agent-b"]);
-    expect(first.nextCursor).toBe("20000000-0000-4000-8000-000000000002");
+    expect(first.nextCursor).toBe(agentIds[1]);
     expect(JSON.stringify(first)).not.toContain("SECRET-PUBLIC-KEY-MATERIAL");
     expect(JSON.stringify(first)).not.toContain("publicKey");
 
