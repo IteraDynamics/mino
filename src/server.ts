@@ -1,6 +1,7 @@
 import "dotenv/config";
 import { randomUUID } from "node:crypto";
 import { loadAuditCheckpointRetentionConfig } from "./infrastructure/config/audit-checkpoint-retention-config.js";
+import { loadOperationalMetricsConfig } from "./infrastructure/config/operational-metrics-config.js";
 import { loadProductionConfig } from "./infrastructure/config/production-config.js";
 import { WebhookAuditCheckpointRetainer } from "./modules/audit/audit-checkpoint-retention.js";
 import { paymentReconciliationNeedsAttention } from "./modules/payments/payment-reconciliation-monitor.js";
@@ -9,8 +10,10 @@ import { NonOverlappingWorkerLoop } from "./production/non-overlapping-worker-lo
 
 const config = loadProductionConfig();
 const auditCheckpointRetentionConfig = loadAuditCheckpointRetentionConfig();
+const operationalMetricsConfig = loadOperationalMetricsConfig();
 const production = await createProductionApplication(config, {
   auditCheckpointRetainer: new WebhookAuditCheckpointRetainer(auditCheckpointRetentionConfig),
+  ...(operationalMetricsConfig ? { operationalMetrics: operationalMetricsConfig } : {}),
 });
 const auditCheckpointRetention = production.auditCheckpointRetention;
 if (!auditCheckpointRetention) {

@@ -2,6 +2,10 @@ import Fastify, { type FastifyInstance } from "fastify";
 import { registerACPLifecycleRoutes } from "./api/acp-lifecycle.routes.js";
 import { registerACPRoutes } from "./api/acp.routes.js";
 import { registerApprovalRoutes } from "./api/approval.routes.js";
+import {
+  registerMetricsRoute,
+  type MetricsRouteDependencies,
+} from "./api/metrics.routes.js";
 import type { HumanApprovalService } from "./modules/approvals/durable-approval.service.js";
 import type { ApprovalResolutionAuthenticator } from "./modules/approvals/approval-resolution-authenticator.js";
 import type { CheckoutLifecycleProxyService } from "./modules/proxy/checkout-lifecycle-proxy.service.js";
@@ -12,6 +16,7 @@ export interface CreateAppOptions {
   readonly lifecycleProxy?: CheckoutLifecycleProxyService;
   readonly approvals?: HumanApprovalService;
   readonly approvalAuthenticator?: ApprovalResolutionAuthenticator;
+  readonly metrics?: MetricsRouteDependencies;
   readonly logger?: boolean;
   readonly now?: () => Date;
 }
@@ -40,6 +45,10 @@ export async function createApp(options: CreateAppOptions): Promise<FastifyInsta
       authenticator: options.approvalAuthenticator,
       ...(options.now ? { now: options.now } : {}),
     });
+  }
+
+  if (options.metrics) {
+    await registerMetricsRoute(app, options.metrics);
   }
 
   return app;
