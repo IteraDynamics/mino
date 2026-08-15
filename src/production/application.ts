@@ -5,6 +5,10 @@ import { Pool } from "pg";
 import { createClient } from "redis";
 import { PrismaClient } from "../generated/prisma/client.js";
 import { createApp } from "../app.js";
+import {
+  PostgresAdminChangeAuditLedger,
+  PostgresAdminChangeAuditVerifier,
+} from "../modules/admin/admin-change-audit-ledger.js";
 import { AdminAuthorizer } from "../modules/admin/admin-authorizer.js";
 import {
   AdminJwtAuthenticator,
@@ -87,6 +91,8 @@ export interface ProductionApplication {
   readonly auditCheckpointRetention?: AuditCheckpointRetentionWorker;
   readonly authorizationStateReconstructor: RedisAuthorizationStateReconstructor;
   readonly auditVerifier: PostgresAuditVerifier;
+  readonly adminAudit: PostgresAdminChangeAuditLedger;
+  readonly adminAuditVerifier: PostgresAdminChangeAuditVerifier;
   readonly adminAccess?: {
     readonly authenticator: AdminJwtAuthenticator;
     readonly authorizer: AdminAuthorizer;
@@ -191,6 +197,8 @@ export async function createProductionApplication(
     );
     const audit = new PostgresAuditLedger(sql, auditKeys);
     const auditVerifier = new PostgresAuditVerifier(sql, auditKeys);
+    const adminAudit = new PostgresAdminChangeAuditLedger(sql, auditKeys);
+    const adminAuditVerifier = new PostgresAdminChangeAuditVerifier(sql, auditKeys);
     const auditCheckpointRetention = overrides.auditCheckpointRetainer
       ? new AuditCheckpointRetentionWorker(sql, audit, overrides.auditCheckpointRetainer)
       : undefined;
@@ -303,6 +311,8 @@ export async function createProductionApplication(
       ...(auditCheckpointRetention ? { auditCheckpointRetention } : {}),
       authorizationStateReconstructor,
       auditVerifier,
+      adminAudit,
+      adminAuditVerifier,
       ...(adminAccess ? { adminAccess } : {}),
       repositories: {
         mandates,
