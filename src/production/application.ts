@@ -39,6 +39,7 @@ import {
   ReconstructingAuthorizationReservations,
   RedisAuthorizationStateReconstructor,
 } from "../modules/spending/authorization-state-reconstruction.js";
+import { PostgresSpendReservationStore } from "../modules/spending/postgres-spend-reservation.store.js";
 import type { ProductionConfig } from "../infrastructure/config/production-config.js";
 import {
   StaticAuditKeyProvider,
@@ -126,6 +127,7 @@ export async function createProductionApplication(
     );
     const redisAuthorization = new RedisAuthorizationScriptClient(redis);
     const rawReservations = new AuthorizationReservationService(redisAuthorization);
+    const durableReservations = new PostgresSpendReservationStore(sql);
     const authorizationStateReconstructor = new RedisAuthorizationStateReconstructor(
       sql,
       redisAuthorization,
@@ -135,6 +137,7 @@ export async function createProductionApplication(
       rawReservations,
       authorizationStateReconstructor,
       clock,
+      durableReservations,
     );
     const paymentOutcomes = new PostgresPaymentOutcomeStore(sql);
 
