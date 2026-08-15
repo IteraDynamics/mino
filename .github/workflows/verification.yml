@@ -55,6 +55,12 @@ jobs:
       - name: Generate Prisma client
         run: npm run prisma:generate
 
+      - name: Generate baseline migration preview
+        run: |
+          echo '=== MINO_BASELINE_SQL_BEGIN ==='
+          npx prisma migrate diff --from-empty --to-schema prisma/schema.prisma --script
+          echo '=== MINO_BASELINE_SQL_END ==='
+
       - name: Materialize test database
         run: npx prisma db push
 
