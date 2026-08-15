@@ -9,6 +9,7 @@ const DATABASE_URL =
 
 const organizationId = "10000000-0000-4000-8000-000000000001";
 const otherOrganizationId = "10000000-0000-4000-8000-000000000002";
+const organizationIds = [organizationId, otherOrganizationId];
 
 integration("Prisma admin inventory repository", () => {
   let prisma: PrismaClient;
@@ -106,9 +107,10 @@ integration("Prisma admin inventory repository", () => {
   });
 
   afterAll(async () => {
-    await prisma.organization.deleteMany({
-      where: { id: { in: [organizationId, otherOrganizationId] } },
-    });
+    await prisma.agentIdentity.deleteMany({ where: { organizationId: { in: organizationIds } } });
+    await prisma.policy.deleteMany({ where: { organizationId: { in: organizationIds } } });
+    await prisma.merchantEndpoint.deleteMany({ where: { organizationId: { in: organizationIds } } });
+    await prisma.organization.deleteMany({ where: { id: { in: organizationIds } } });
     await prisma.$disconnect();
   });
 
