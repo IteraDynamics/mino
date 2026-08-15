@@ -152,7 +152,7 @@ export class AdminJwtAuthenticator implements AdminBearerAuthenticator {
       return failure("SUBJECT_INVALID");
     }
 
-    const nowSeconds = Math.floor(this.now().getTime() / 1_000);
+    const nowSeconds = this.now().getTime() / 1_000;
     if (payload.exp <= nowSeconds - this.clockSkewSeconds) {
       return failure("TOKEN_EXPIRED");
     }
@@ -209,7 +209,13 @@ function parseHeader(encoded: string): ParsedJwtHeader | undefined {
   if (!value || typeof value.alg !== "string" || typeof value.kid !== "string") {
     return undefined;
   }
-  if (!value.alg.trim() || !value.kid.trim() || value.kid.length > 256) {
+  if (
+    !value.alg.trim() ||
+    !value.kid.trim() ||
+    value.kid.length > 256 ||
+    value.crit !== undefined ||
+    value.b64 !== undefined
+  ) {
     return undefined;
   }
   return { alg: value.alg, kid: value.kid };
@@ -291,7 +297,7 @@ function validAudience(value: unknown): value is string | readonly string[] {
 }
 
 function validNumericDate(value: unknown): value is number {
-  return typeof value === "number" && Number.isFinite(value) && Number.isSafeInteger(value);
+  return typeof value === "number" && Number.isFinite(value);
 }
 
 function isBase64Url(value: string): boolean {
