@@ -1,5 +1,5 @@
 import { generateKeyPairSync } from "node:crypto";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { ApprovalMode, type AgentSpendMandate, type MandateTokenClaims } from "../../src/domain/mandates/mandate.types.js";
 import { DecisionVerdict } from "../../src/domain/evaluation/evaluation.types.js";
 import { sha256Hex } from "../../src/infrastructure/crypto/canonical-json.js";
@@ -34,6 +34,7 @@ function buildHarness(options: {
   upstreamStatus?: number;
 } = {}) {
   const jti = "lifecycle-mandate-jti";
+  const tokenJtiHash = sha256Hex(jti);
   const mandate: AgentSpendMandate = {
     id: "mandate-lifecycle",
     organizationId: "org-lifecycle",
@@ -56,7 +57,7 @@ function buildHarness(options: {
     issuedAt: new Date((nowSeconds - 60) * 1000),
     expiresAt: new Date((nowSeconds + 600) * 1000),
     signingKeyId: "mino-lifecycle-k1",
-    tokenJtiHash: sha256Hex(jti),
+    tokenJtiHash,
   };
   const claims: MandateTokenClaims = {
     iss: "https://mino.example",
@@ -131,6 +132,7 @@ function buildHarness(options: {
   };
   const audits: Array<{ operation: string; decision: { eligibleForDelegationAssertion: boolean }; upstreamStatus?: number }> = [];
   let idCounter = 0;
+  let nonceCounter = 0;
   const proxy = new CheckoutLifecycleProxyService({
     mandateTokens: tokenService,
     mandates: {
@@ -157,14 +159,14 @@ function buildHarness(options: {
 
   function proof(method: string, path: string, body: unknown, idempotencyKey: string): AgentRequestProof {
     const timestamp = nowSeconds.toString(10);
-    const nonce = `lifecycle_nonce_${Math.random().toString(36).slice(2).padEnd(20, "x")}`.slice(0, 32);
+    const nonce = `lifecycle_nonce_${String(++nonceCounter).padStart(24, "0")}`;
     const signingPayload = buildAgentSigningPayload({
       method,
       path,
       timestamp,
       nonce,
       body,
-      mandateTokenJtiHash: mandate.tokenJtiHash,
+      mandateTokenJtiHash: tokenJtiHash,
       idempotencyKey,
       apiVersion: "2026-04-17",
     });
