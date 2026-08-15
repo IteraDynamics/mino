@@ -4,7 +4,7 @@ Mino is a policy, authorization, approval, and security control plane for agenti
 
 ## Implemented MVP security path
 
-The current branch contains the policy kernel plus the ACP proxy, payment-reconciliation, autonomous reconciliation, durable human-approval, durable approval-notification delivery, tamper-evident audit, production-application wiring, continuous recovery, managed-secret inputs, and external audit-checkpoint retention:
+The current branch contains the policy kernel plus the ACP proxy, payment-reconciliation, autonomous reconciliation, durable human-approval, durable approval-notification delivery, tamper-evident audit, production-application wiring, continuous recovery, managed-secret inputs, external audit-checkpoint retention, and Redis cold-loss reconstruction:
 
 1. **Spend mandate** — Mino issues/verifies compact Ed25519-signed mandate tokens. The bearer token only carries identity/delegation references; the immutable server-side mandate snapshot remains authoritative and raw token values are never persisted.
 2. **Agent identity proof** — payment-facing requests carry an Ed25519 request signature bound to method, path, timestamp, nonce, mandate-token JTI digest, ACP version, idempotency key, and canonical body digest. Nonces are claimed in Redis to reject replay.
@@ -27,6 +27,7 @@ The current branch contains the policy kernel plus the ACP proxy, payment-reconc
 19. **Continuous payment recovery and operational monitoring** — production schedules payment reconciliation continuously on a non-overlapping worker loop. A read-only PostgreSQL monitor reports unresolved counts, stale outcomes, high retry counts, and oldest unresolved age, with structured warnings when payment uncertainty exceeds the normal recovery window. Shutdown drains in-flight worker work before closing data stores.
 20. **Managed secret inputs and safe audit-key rotation** — private signing keys, approval HMAC secrets, and merchant reconciliation credentials may be supplied through mounted secret files compatible with external vault/CSI/sidecar patterns rather than ordinary inline environment values. Startup rejects conflicting secret sources, invalid Ed25519 keys, and an active audit private key that does not match the public key registered under its active key ID. Historical audit public keys remain available so old rows stay verifiable across controlled rolling rotations.
 21. **Independent audit-checkpoint retention export** — production periodically issues stable Ed25519-signed checkpoints for organization audit heads and sends them over an HTTPS/HMAC transport to a separately operated retention bridge. Delivery is at-least-once with a deterministic event ID, so retries, restarts, and multiple Mino instances may safely resend while the external system deduplicates and durably anchors the checkpoint outside PostgreSQL.
+22. **Redis cold-loss reconstruction** — accepted Redis spend reservations are mirrored to PostgreSQL before a payment can advance, then committed/released/extended alongside the Redis lifecycle. Production startup proactively rebuilds rolling committed spend, active pre-dispatch reservations, unresolved-payment holds, and recent velocity history. A per-mandate reconstruction marker makes a complete Redis loss detectable; later authorization fails closed until that mandate is rebuilt from durable PostgreSQL facts.
 
 ## ACP trust boundary
 
@@ -60,7 +61,7 @@ The ACP request body remains protocol-compatible. Mino-specific delegation and a
 - Approval grants never override restricted categories, merchant/identity failures, mandate revocation/expiry, velocity controls, cross-merchant burst controls, or invalid FX state.
 - Transaction-limit approval applies only to the same reviewed transaction-limit breach.
 - Daily-limit approval also binds the reviewed prior-spend snapshot. If committed/reserved daily exposure has increased before retry, the approval is stale and payment is blocked.
-- Temporary Redis reservations are released while approval is pending. Only the reservation-attempt idempotency entry is cleared so an exact approved retry can reserve again; the durable PostgreSQL ApprovalRequest remains the authoritative replay guard.
+- Temporary Redis reservations are released while approval is pending. The durable `SpendReservation` is released at the same boundary and the Redis reservation-attempt idempotency entry is cleared so an exact approved retry can create a fresh reservation; the durable PostgreSQL `ApprovalRequest` remains the authoritative approval replay guard.
 - A narrowly scoped approved daily-limit retry may cross the Redis daily cap, but it still cannot bypass velocity or cross-merchant controls.
 
 ## Audit-integrity invariants
@@ -103,7 +104,7 @@ Sensitive configuration can be supplied from mounted secret files rather than in
 - Cross-currency checks require a valid point-in-time FX quote. Conversion uses integer arithmetic and ceiling rounding so FX rounding can never undercount authorization spend.
 - Only an `ALLOW` decision is eligible for a downstream delegation assertion.
 
-## Redis data model
+## Redis data model and recovery
 
 Authorization keys use a Redis Cluster hash tag per mandate:
 
@@ -113,9 +114,20 @@ mino:v1:auth:{mandateId}:reservations
 mino:v1:auth:{mandateId}:attempts
 mino:v1:auth:{mandateId}:idem:<idempotencyKey>
 mino:v1:auth:{mandateId}:reservation:<reservationId>
+mino:v1:auth:{mandateId}:state-reconstructed
 ```
 
-The Lua boundary currently restricts authorization amounts to JavaScript's exact safe-integer range before converting to Lua numbers. This is vastly above practical payment sizes while preserving exact comparison semantics. A payment that has crossed the merchant-dispatch boundary receives a longer reconciliation hold so the reservation cannot silently age out while its outcome is unknown.
+The Lua boundary restricts authorization amounts to JavaScript's exact safe-integer range before converting to Lua numbers. Durable reconstruction applies the same bound and fails closed rather than rounding a PostgreSQL `bigint` that Redis/Lua cannot represent exactly.
+
+For new reservations, Redis remains the atomic concurrency boundary, but an accepted reservation is durably mirrored into PostgreSQL `SpendReservation` before the request can proceed toward `PaymentOutcome` creation or merchant dispatch. If that PostgreSQL write fails, Mino attempts to release the Redis reservation and fails the request.
+
+After complete Redis state loss, the missing per-mandate reconstruction marker forces production authorization to rebuild before proceeding. Recovery uses recent `SpendReservation` committed/active states, unresolved and successful `PaymentOutcome` rows as legacy/cross-dispatch fallback, and recent payment/audit events for velocity history. Unresolved payments receive a fresh reconciliation hold; recent committed spend returns to the rolling-daily calculation. Production startup proactively reconstructs relevant mandates, while the same guard performs lazy recovery if Redis is wiped later.
+
+The production wrapper checks the reconstruction marker both before and after authorization operations. If Redis disappears during an operation, the request fails closed rather than relying on a reservation that vanished underneath it.
+
+This is a **complete Redis loss/restart** recovery design. It does not claim to detect arbitrary selective eviction of one authorization key while the reconstruction marker survives. Production Redis therefore needs an appropriate no-eviction configuration and persistence/availability policy. Ephemeral Redis idempotency cache entries for requests that never crossed a durable payment or approval boundary are also not claimed to be completely reconstructed.
+
+A payment that has crossed the merchant-dispatch boundary receives a longer reconciliation hold so the reservation cannot silently age out while its outcome is unknown.
 
 ## Development
 
@@ -136,6 +148,5 @@ npm run test:integration
 ## Next implementation slice
 
 - Add direct vendor-specific KMS/HSM signing integrations where private key material never leaves the managed cryptographic boundary.
-- Reconstruct Redis authorization reservations from durable PostgreSQL state after cold Redis loss.
 - Expand ACP proxy coverage to retrieve/update/cancel while keeping only payment-bearing operations behind spend reservation.
 - Add vendor-specific metrics/alert transports, tracing, and operational dashboards as deployment needs mature.
