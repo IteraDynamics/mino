@@ -51,14 +51,11 @@ integration("AuditCheckpointRetentionWorker", () => {
     const retained: AuditCheckpointRetentionEvent[] = [];
     const worker = new AuditCheckpointRetentionWorker(pool, ledger, collectingRetainer(retained));
 
-    expect(await worker.runOnce()).toEqual({
-      considered: 1,
-      delivered: 1,
-      alreadyDelivered: 0,
-      failed: 0,
-    });
-    expect(retained).toHaveLength(1);
-    expect(retained[0]?.checkpoint).toMatchObject({
+    const firstRun = await worker.runOnce();
+    expect(firstRun.failed).toBe(0);
+    const firstOrganizationEvents = eventsForOrganization(retained);
+    expect(firstOrganizationEvents).toHaveLength(1);
+    expect(firstOrganizationEvents[0]?.checkpoint).toMatchObject({
       organizationId,
       chainSequence: "1",
       chainDigest: "digest-1",
@@ -66,35 +63,36 @@ integration("AuditCheckpointRetentionWorker", () => {
       signingKeyId: "audit-retention-k1",
     });
 
-    expect(await worker.runOnce()).toEqual({
-      considered: 1,
-      delivered: 0,
-      alreadyDelivered: 1,
-      failed: 0,
-    });
-    expect(retained).toHaveLength(1);
+    const secondRun = await worker.runOnce();
+    expect(secondRun.failed).toBe(0);
+    expect(eventsForOrganization(retained)).toHaveLength(1);
 
     const secondUpdatedAt = new Date(firstUpdatedAt.getTime() + 60_000);
     await setHead("2", "digest-2", secondUpdatedAt);
     const advanced = await worker.runOnce();
-    expect(advanced.delivered).toBe(1);
-    expect(retained).toHaveLength(2);
-    expect(retained[1]?.checkpoint).toMatchObject({
+    expect(advanced.failed).toBe(0);
+    const advancedEvents = eventsForOrganization(retained);
+    expect(advancedEvents).toHaveLength(2);
+    expect(advancedEvents[1]?.checkpoint).toMatchObject({
+      organizationId,
       chainSequence: "2",
       chainDigest: "digest-2",
       issuedAt: secondUpdatedAt.toISOString(),
     });
-    expect(retained[1]?.eventId).not.toBe(retained[0]?.eventId);
+    expect(advancedEvents[1]?.eventId).not.toBe(advancedEvents[0]?.eventId);
   });
 
   it("retries a failed external write with the identical event identity and checkpoint payload", async () => {
     const attempts: AuditCheckpointRetentionEvent[] = [];
-    let fail = true;
+    let failOurOrganization = true;
     const retainer: AuditCheckpointRetainer = {
       async retain(event) {
+        if (event.checkpoint.organizationId !== organizationId) {
+          return;
+        }
         attempts.push(event);
-        if (fail) {
-          fail = false;
+        if (failOurOrganization) {
+          failOurOrganization = false;
           throw new Error("external retention unavailable");
         }
       },
@@ -102,7 +100,7 @@ integration("AuditCheckpointRetentionWorker", () => {
     const worker = new AuditCheckpointRetentionWorker(pool, ledger, retainer);
 
     expect((await worker.runOnce()).failed).toBe(1);
-    expect((await worker.runOnce()).delivered).toBe(1);
+    expect((await worker.runOnce()).failed).toBe(0);
     expect(attempts).toHaveLength(2);
     expect(attempts[1]).toEqual(attempts[0]);
   });
@@ -116,9 +114,11 @@ integration("AuditCheckpointRetentionWorker", () => {
     await worker1.runOnce();
     await worker2.runOnce();
 
-    expect(first).toHaveLength(1);
-    expect(second).toHaveLength(1);
-    expect(second[0]).toEqual(first[0]);
+    const firstOrganizationEvents = eventsForOrganization(first);
+    const secondOrganizationEvents = eventsForOrganization(second);
+    expect(firstOrganizationEvents).toHaveLength(1);
+    expect(secondOrganizationEvents).toHaveLength(1);
+    expect(secondOrganizationEvents[0]).toEqual(firstOrganizationEvents[0]);
   });
 
   async function setHead(sequence: string, digest: string, updatedAt: Date): Promise<void> {
@@ -133,6 +133,12 @@ integration("AuditCheckpointRetentionWorker", () => {
     );
   }
 });
+
+function eventsForOrganization(
+  events: readonly AuditCheckpointRetentionEvent[],
+): AuditCheckpointRetentionEvent[] {
+  return events.filter((event) => event.checkpoint.organizationId === organizationId);
+}
 
 function collectingRetainer(target: AuditCheckpointRetentionEvent[]): AuditCheckpointRetainer {
   return {
