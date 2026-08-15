@@ -276,7 +276,6 @@ function lifecycleAccessDecision(
     reasons: [],
     requestedAmount: zero,
     policyAmount: zero,
-    approvedAmount: zero,
     eligibleForDelegationAssertion: false,
     evaluationStartedAtMicros: 0,
     evaluationFinishedAtMicros: 0,
