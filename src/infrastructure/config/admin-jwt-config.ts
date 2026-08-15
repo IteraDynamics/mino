@@ -1,6 +1,12 @@
 import { createPublicKey } from "node:crypto";
 import type { AdminJwtIssuerConfig } from "../../modules/admin/admin-jwt-authenticator.js";
 
+export function loadAdminJwtIssuerConfiguration(
+  environment: NodeJS.ProcessEnv = process.env,
+): readonly AdminJwtIssuerConfig[] {
+  return parseAdminJwtIssuerConfiguration(environment.MINO_ADMIN_JWT_ISSUERS_JSON);
+}
+
 export function parseAdminJwtIssuerConfiguration(
   value: string | undefined,
 ): readonly AdminJwtIssuerConfig[] {
