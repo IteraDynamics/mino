@@ -20,9 +20,9 @@ describe("admin JWT issuer configuration", () => {
     expect(parseAdminJwtIssuerConfiguration("   ")).toEqual([]);
   });
 
-  it("loads canonical HTTPS issuer, audience, and pinned public keys", () => {
+  it("loads exact HTTPS issuer strings, audience, and pinned public keys", () => {
     const value = JSON.stringify({
-      "https://login.example.test/": {
+      "https://login.example.test": {
         audience: "mino-admin",
         keys: {
           "rsa-1": publicKeyBase64("rsa"),
@@ -33,26 +33,25 @@ describe("admin JWT issuer configuration", () => {
 
     const config = parseAdminJwtIssuerConfiguration(value);
     expect(config).toHaveLength(1);
-    expect(config[0]?.issuer).toBe("https://login.example.test/");
+    expect(config[0]?.issuer).toBe("https://login.example.test");
     expect(config[0]?.audience).toBe("mino-admin");
     expect(config[0]?.verificationKeys.size).toBe(2);
     expect(config[0]?.verificationKeys.get("rsa-1")).toContain("BEGIN PUBLIC KEY");
   });
 
-  it("rejects non-HTTPS, non-canonical, or credential-bearing issuer URLs", () => {
+  it("rejects non-HTTPS, query/fragment-bearing, or credential-bearing issuer URLs", () => {
     const key = publicKeyBase64();
     for (const issuer of [
       "http://login.example.test/",
       "https://user:pass@login.example.test/",
       "https://login.example.test/?tenant=x",
       "https://login.example.test/#fragment",
-      "https://login.example.test",
     ]) {
       expect(() =>
         parseAdminJwtIssuerConfiguration(
           JSON.stringify({ [issuer]: { audience: "mino-admin", keys: { key } } }),
         ),
-      ).toThrow(/canonical HTTPS URL/i);
+      ).toThrow(/HTTPS URL/i);
     }
   });
 
