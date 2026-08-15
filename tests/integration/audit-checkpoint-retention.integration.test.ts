@@ -1,4 +1,4 @@
-import { generateKeyPairSync } from "node:crypto";
+import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { PgSqlAdapter } from "../../src/infrastructure/postgres/pg-sql-adapter.js";
@@ -13,7 +13,7 @@ const integration = process.env.RUN_INTEGRATION_TESTS === "1" ? describe : descr
 const DATABASE_URL =
   process.env.DATABASE_URL ?? "postgresql://mino:mino@127.0.0.1:5432/mino?schema=public";
 
-const organizationId = "71000000-0000-4000-8000-000000000001";
+const organizationId = randomUUID();
 const firstUpdatedAt = new Date("2026-08-14T20:45:00.000Z");
 
 integration("AuditCheckpointRetentionWorker", () => {
