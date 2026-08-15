@@ -30,8 +30,10 @@ export interface ProductionConfig {
 }
 
 const environmentSchema = z.object({
-  DATABASE_URL: z.string().min(1),
-  REDIS_URL: z.string().min(1),
+  DATABASE_URL: z.string().min(1).optional(),
+  DATABASE_URL_FILE: z.string().min(1).optional(),
+  REDIS_URL: z.string().min(1).optional(),
+  REDIS_URL_FILE: z.string().min(1).optional(),
   MINO_HOST: z.string().min(1).optional(),
   MINO_PORT: z.string().regex(/^\d+$/).optional(),
   MINO_ISSUER: z.string().url(),
@@ -65,6 +67,21 @@ export function loadProductionConfig(
   }
 
   const values = parsed.data;
+  const databaseUrl = readRequiredSecret(
+    {
+      ...(values.DATABASE_URL ? { inline: values.DATABASE_URL } : {}),
+      ...(values.DATABASE_URL_FILE ? { file: values.DATABASE_URL_FILE } : {}),
+    },
+    "DATABASE_URL",
+  );
+  const redisUrl = readRequiredSecret(
+    {
+      ...(values.REDIS_URL ? { inline: values.REDIS_URL } : {}),
+      ...(values.REDIS_URL_FILE ? { file: values.REDIS_URL_FILE } : {}),
+    },
+    "REDIS_URL",
+  );
+
   const port = values.MINO_PORT ? Number(values.MINO_PORT) : DEFAULT_PORT;
   if (!Number.isSafeInteger(port) || port < 1 || port > 65_535) {
     throw new Error("MINO_PORT must be an integer between 1 and 65535");
@@ -129,8 +146,8 @@ export function loadProductionConfig(
   );
 
   return {
-    databaseUrl: assertPostgresUrl(values.DATABASE_URL),
-    redisUrl: assertRedisUrl(values.REDIS_URL),
+    databaseUrl: assertPostgresUrl(databaseUrl),
+    redisUrl: assertRedisUrl(redisUrl),
     host: values.MINO_HOST ?? DEFAULT_HOST,
     port,
     issuer: values.MINO_ISSUER,

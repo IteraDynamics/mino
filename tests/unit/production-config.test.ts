@@ -67,6 +67,46 @@ describe("loadProductionConfig", () => {
     expect(() => loadProductionConfig(malformed)).toThrow(/invalid bearer credential/i);
   });
 
+  it("loads database and Redis URLs from mounted secret files", () => {
+    const environment = validEnvironment();
+    const directory = mkdtempSync(join(tmpdir(), "mino-connection-secrets-"));
+    try {
+      const databasePath = join(directory, "database_url");
+      const redisPath = join(directory, "redis_url");
+      writeFileSync(databasePath, `${environment.DATABASE_URL}\n`);
+      writeFileSync(redisPath, `${environment.REDIS_URL}\n`);
+
+      delete environment.DATABASE_URL;
+      delete environment.REDIS_URL;
+      environment.DATABASE_URL_FILE = databasePath;
+      environment.REDIS_URL_FILE = redisPath;
+
+      const config = loadProductionConfig(environment);
+      expect(config.databaseUrl).toBe("postgresql://mino:mino@127.0.0.1:5432/mino?schema=public");
+      expect(config.redisUrl).toBe("redis://127.0.0.1:6379");
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects ambiguous or missing database and Redis connection secret sources", () => {
+    const databaseAmbiguous = validEnvironment();
+    databaseAmbiguous.DATABASE_URL_FILE = "/tmp/database_url";
+    expect(() => loadProductionConfig(databaseAmbiguous)).toThrow(/DATABASE_URL.*exactly one secret source/i);
+
+    const redisAmbiguous = validEnvironment();
+    redisAmbiguous.REDIS_URL_FILE = "/tmp/redis_url";
+    expect(() => loadProductionConfig(redisAmbiguous)).toThrow(/REDIS_URL.*exactly one secret source/i);
+
+    const databaseMissing = validEnvironment();
+    delete databaseMissing.DATABASE_URL;
+    expect(() => loadProductionConfig(databaseMissing)).toThrow(/DATABASE_URL.*exactly one secret source/i);
+
+    const redisMissing = validEnvironment();
+    delete redisMissing.REDIS_URL;
+    expect(() => loadProductionConfig(redisMissing)).toThrow(/REDIS_URL.*exactly one secret source/i);
+  });
+
   it("loads private keys, HMAC secrets, and merchant credentials from mounted secret files", () => {
     const environment = validEnvironment();
     const directory = mkdtempSync(join(tmpdir(), "mino-secrets-"));

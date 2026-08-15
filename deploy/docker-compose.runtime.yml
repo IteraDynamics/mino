@@ -1,0 +1,136 @@
+name: mino
+
+services:
+  mino:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: mino:local
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 30s
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      NODE_ENV: production
+      MINO_HOST: 0.0.0.0
+      MINO_PORT: 3000
+      DATABASE_URL_FILE: /run/secrets/database_url
+      REDIS_URL_FILE: /run/secrets/redis_url
+      MINO_ISSUER: ${MINO_ISSUER:?set MINO_ISSUER}
+      MINO_MANDATE_PUBLIC_KEYS_B64_JSON: ${MINO_MANDATE_PUBLIC_KEYS_B64_JSON:?set mandate public keys}
+      MINO_DELEGATION_SIGNING_KEY_ID: ${MINO_DELEGATION_SIGNING_KEY_ID:?set delegation key id}
+      MINO_DELEGATION_PRIVATE_KEY_FILE: /run/secrets/delegation_private_key
+      MINO_AUDIT_SIGNING_KEY_ID: ${MINO_AUDIT_SIGNING_KEY_ID:?set audit key id}
+      MINO_AUDIT_PRIVATE_KEY_FILE: /run/secrets/audit_private_key
+      MINO_AUDIT_PUBLIC_KEYS_B64_JSON: ${MINO_AUDIT_PUBLIC_KEYS_B64_JSON:?set audit public keys}
+      MINO_APPROVAL_RESOLUTION_SECRET_FILE: /run/secrets/approval_resolution_secret
+      MINO_APPROVAL_WEBHOOK_URL: ${MINO_APPROVAL_WEBHOOK_URL:?set approval webhook URL}
+      MINO_APPROVAL_WEBHOOK_SECRET_FILE: /run/secrets/approval_webhook_secret
+      MINO_MERCHANT_CREDENTIALS_FILE: /run/secrets/merchant_credentials
+      MINO_AUDIT_CHECKPOINT_RETENTION_URL: ${MINO_AUDIT_CHECKPOINT_RETENTION_URL:?set audit retention URL}
+      MINO_AUDIT_CHECKPOINT_RETENTION_SECRET_FILE: /run/secrets/audit_checkpoint_retention_secret
+      MINO_METRICS_BEARER_TOKEN_FILE: /run/secrets/metrics_bearer_token
+    secrets:
+      - database_url
+      - redis_url
+      - delegation_private_key
+      - audit_private_key
+      - approval_resolution_secret
+      - approval_webhook_secret
+      - merchant_credentials
+      - audit_checkpoint_retention_secret
+      - metrics_bearer_token
+    ports:
+      - "${MINO_BIND_ADDRESS:-127.0.0.1}:${MINO_PUBLISHED_PORT:-3000}:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - frontend
+      - backend
+
+  postgres:
+    image: postgres:16.15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: mino
+      POSTGRES_DB: mino
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets:
+      - postgres_password
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mino -d mino"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - backend
+
+  redis:
+    image: redis:7.4.10-alpine
+    restart: unless-stopped
+    command:
+      - sh
+      - -ec
+      - exec redis-server /usr/local/etc/redis/redis.conf --requirepass "$$(cat /run/secrets/redis_password)"
+    secrets:
+      - redis_password
+    configs:
+      - source: redis_config
+        target: /usr/local/etc/redis/redis.conf
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$(cat /run/secrets/redis_password)\" --no-auth-warning ping | grep -q PONG"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - backend
+
+networks:
+  frontend: {}
+  backend:
+    internal: true
+
+volumes:
+  postgres-data: {}
+  redis-data: {}
+
+configs:
+  redis_config:
+    file: ./redis.conf
+
+secrets:
+  database_url:
+    file: ${MINO_DEPLOY_SECRETS_DIR:-./secrets}/database_url
+  redis_url:
+    file: ${MINO_DEPLOY_SECRETS_DIR:-./secrets}/redis_url
+  postgres_password:
+    file: ${MINO_DEPLOY_SECRETS_DIR:-./secrets}/postgres_password
+  redis_password:
+    file: ${MINO_DEPLOY_SECRETS_DIR:-./secrets}/redis_password
+  delegation_private_key:
+    file: ${MINO_DEPLOY_SECRETS_DIR:-./secrets}/delegation_private_key.pem
+  audit_private_key:
+    file: ${MINO_DEPLOY_SECRETS_DIR:-./secrets}/audit_private_key.pem
+  approval_resolution_secret:
+    file: ${MINO_DEPLOY_SECRETS_DIR:-./secrets}/approval_resolution_secret
+  approval_webhook_secret:
+    file: ${MINO_DEPLOY_SECRETS_DIR:-./secrets}/approval_webhook_secret
+  merchant_credentials:
+    file: ${MINO_DEPLOY_SECRETS_DIR:-./secrets}/merchant_credentials.json
+  audit_checkpoint_retention_secret:
+    file: ${MINO_DEPLOY_SECRETS_DIR:-./secrets}/audit_checkpoint_retention_secret
+  metrics_bearer_token:
+    file: ${MINO_DEPLOY_SECRETS_DIR:-./secrets}/metrics_bearer_token
