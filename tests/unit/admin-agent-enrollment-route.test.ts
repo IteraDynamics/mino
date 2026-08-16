@@ -2,6 +2,10 @@ import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { createApp } from "../../src/app.js";
 import type { AdminAgentEnrollmentRouteDependencies } from "../../src/api/admin-agent-enrollment.routes.js";
+import type {
+  AdminAgentEnrollmentActor,
+  AdminAgentEnrollmentRequest,
+} from "../../src/modules/admin/admin-agent-enrollment.js";
 import type { CheckoutProxyService } from "../../src/modules/proxy/checkout-proxy.service.js";
 
 function proxyStub(): CheckoutProxyService {
@@ -31,11 +35,15 @@ describe("admin agent enrollment route", () => {
           principalId,
           membershipId,
           organizationId,
+          permission: "agent.create" as const,
           roles: ["AGENT_MANAGER" as const],
         }),
       },
-      enrollment: {
-        enroll: async (actor, request) => {
+      agentEnrollment: {
+        enroll: async (
+          actor: AdminAgentEnrollmentActor,
+          request: AdminAgentEnrollmentRequest,
+        ) => {
           seenActor = actor;
           return {
             outcome: "CREATED" as const,
@@ -44,7 +52,7 @@ describe("admin agent enrollment route", () => {
               id: randomUUID(),
               organizationId,
               externalAgentId: request.externalAgentId,
-              displayName: request.displayName,
+              ...(request.displayName ? { displayName: request.displayName } : {}),
               status: "ACTIVE" as const,
               keyId: request.keyId,
               publicKeyFingerprint: "fingerprint",
@@ -96,9 +104,13 @@ describe("admin agent enrollment route", () => {
           }),
         },
         authorizer: {
-          authorize: async () => ({ allowed: false as const, reason: "PERMISSION_MISSING" as const }),
+          authorize: async () => ({
+            allowed: false as const,
+            permission: "agent.create" as const,
+            reason: "PERMISSION_MISSING" as const,
+          }),
         },
-        enrollment: {
+        agentEnrollment: {
           enroll: async () => {
             called = true;
             throw new Error("must not run");
