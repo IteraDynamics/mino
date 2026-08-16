@@ -33,8 +33,9 @@ Mino is a policy, authorization, approval, and security control plane for agenti
 27. **Administrative identity and RBAC foundation** — administrative humans are represented separately from spending-beneficiary users using stable external `(issuer, subject)` identities, organization-local memberships, durable role assignments, and a centralized fail-closed permission authorizer. Built-in role meanings are deterministic code-reviewed permission bundles rather than mutable database definitions.
 28. **Cryptographically authenticated admin ingress** — optional administrative HTTP routes verify pinned-issuer Bearer JWTs with strict issuer/audience/subject/time/key/algorithm checks, then independently require the exact organization-local Mino permission. Invalid authentication and valid-but-unauthorized identities remain separate 401/403 boundaries.
 29. **Permissioned administrative inventory** — authenticated administrators can page through only the agents, policies, and merchants visible inside an authorized organization. Policy `BIGINT` monetary values remain exact minor-unit strings, and list projections omit agent public-key material and internal merchant upstream URLs.
-30. **Atomic administrative change audit foundation** — successful future admin mutations can use one PostgreSQL transaction to commit both the governed state change and a separately sequenced Ed25519-signed administrative change receipt. Before/after snapshots are defensively redacted before hashing or persistence, and a verifier detects mutation, gaps, broken links, signature corruption, and disagreement with the durable chain head.
+30. **Atomic administrative change audit foundation** — successful admin mutations can use one PostgreSQL transaction to commit both the governed state change and a separately sequenced Ed25519-signed administrative change receipt. Before/after snapshots are defensively redacted before hashing or persistence, and a verifier detects mutation, gaps, broken links, signature corruption, and disagreement with the durable chain head.
 31. **Independent administrative-audit checkpoint retention** — signed administrative chain-head checkpoints are exported to the separate HTTPS/HMAC retention boundary with admin-specific stable event IDs. A retained checkpoint can detect coherent PostgreSQL suffix deletion even when an attacker rewinds the mutable local admin chain head to make the shortened database internally consistent.
+32. **Audited administrative agent enrollment** — an administrator with `agent.create` can enroll a new Ed25519 machine identity through the admin API. Creation and the signed administrative receipt commit atomically; exact equivalent retries replay safely without a second audit event, conflicting reuse is rejected, and enrollment alone grants no mandate or spend authority.
 
 ## ACP trust boundary
 
@@ -60,6 +61,7 @@ POST /v1/approvals/:approvalRequestId/votes
 
 GET  /v1/admin/organizations/:organizationId/access
 GET  /v1/admin/organizations/:organizationId/agents
+POST /v1/admin/organizations/:organizationId/agents
 GET  /v1/admin/organizations/:organizationId/policies
 GET  /v1/admin/organizations/:organizationId/merchants
 
@@ -70,7 +72,7 @@ GET  /metrics   # optional; dedicated Bearer credential required
 
 The ACP request body remains protocol-compatible. Mino-specific mandate and agent-proof material lives in headers. Approval bridge endpoints use separate timestamped HMAC authentication. See `openapi/mino.openapi.yaml`.
 
-Administrative routes are opt-in: they are not registered unless trusted admin JWT issuers are explicitly configured. The current administrative HTTP surface is read-only. No HTTP route can yet create, update, activate, suspend, rotate, issue, revoke, or otherwise mutate governed administrative state. See `docs/admin-http-authentication.md` and `docs/admin-inventory.md`.
+Administrative routes are opt-in: they are not registered unless trusted admin JWT issuers are explicitly configured. Inventory routes remain read-only. The current write surface is deliberately narrow: `POST /v1/admin/organizations/:organizationId/agents` requires `agent.create`, accepts only a validated Ed25519 public identity, and atomically records the enrolled agent plus its signed administrative change receipt. Enrollment does **not** create a mandate, attach a policy, or grant spend/payment authority. See `docs/admin-http-authentication.md`, `docs/admin-inventory.md`, and `docs/admin-agent-enrollment.md`.
 
 ## Administrative authorization boundary
 
@@ -84,7 +86,7 @@ Separation of duties begins in the role catalog: `FINANCE_MANAGER` can administe
 
 ## Administrative change-audit boundary
 
-Administrative change auditing has its own per-organization chain and does not share the transaction audit sequence. `PostgresAdminChangeAuditLedger.appendInTransaction` is designed for future mutation handlers to mutate governed state and append the signed change receipt on the same PostgreSQL transaction; the caller owns the final commit or rollback.
+Administrative change auditing has its own per-organization chain and does not share the transaction audit sequence. `PostgresAdminChangeAuditLedger.appendInTransaction` allows mutation handlers to mutate governed state and append the signed change receipt on the same PostgreSQL transaction; the caller owns the final commit or rollback.
 
 Each committed receipt snapshots the authorized principal and membership IDs, role set, permission, action/resource identity, request digest, timestamp, and sanitized before/after state. Principal and membership IDs are stored as historical scalar facts rather than cascading foreign keys, so later removal of an administrator cannot cascade-delete the change record.
 
@@ -188,4 +190,4 @@ The GitHub verification gate additionally builds the runtime and migration conta
 
 ## Next implementation slice
 
-The next product slice is the first **narrowly permissioned administrative mutation API**, using the #18 authenticated human ingress, #17 organization-local RBAC, #20 atomic state-change + signed-audit transaction primitive, and #21 independently retained administrative checkpoints. The first write should remain deliberately low blast radius—agent enrollment is a strong candidate because creating an agent identity alone does not grant spending authority; a valid mandate is still required before the agent can transact.
+The next product slice is **administrative agent lifecycle management**: single-agent detail plus narrowly permissioned suspend/reactivate and Ed25519 key-rotation operations. Those mutations must reuse the same authenticated organization-local admin boundary and atomically append signed administrative change receipts. Suspension must immediately block new agent requests, while key rotation must make the old verification key unusable for new requests.
