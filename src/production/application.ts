@@ -22,6 +22,7 @@ import {
   AdminJwtAuthenticator,
   type AdminJwtIssuerConfig,
 } from "../modules/admin/admin-jwt-authenticator.js";
+import { PostgresAdminMandateManagementService } from "../modules/admin/admin-mandate-management.js";
 import { PostgresAdminMerchantAdministrationService } from "../modules/admin/admin-merchant-administration.js";
 import { PostgresAdminPolicyManagementService } from "../modules/admin/admin-policy-management.js";
 import { AgentRequestVerifier } from "../modules/agents/agent-request-verifier.js";
@@ -235,6 +236,17 @@ export async function createProductionApplication(
       generateId,
       clock,
     );
+    const adminMandateManagement = config.mandateSigningKey
+      ? new PostgresAdminMandateManagementService(
+          sql,
+          adminAudit,
+          mandateTokens,
+          config.mandateSigningKey,
+          config.issuer,
+          generateId,
+          clock,
+        )
+      : undefined;
     const adminAuditVerifier = new PostgresAdminChangeAuditVerifier(sql, auditKeys);
     const adminAuditCheckpointIssuer = new PostgresAdminAuditCheckpointIssuer(sql, auditKeys);
     const retainedAdminAuditVerifier = new PostgresRetainedAdminAuditVerifier(
@@ -323,6 +335,14 @@ export async function createProductionApplication(
               ...adminAccess,
               merchantAdministration: adminMerchantAdministration,
             },
+            ...(adminMandateManagement
+              ? {
+                  adminMandateManagement: {
+                    ...adminAccess,
+                    mandateManagement: adminMandateManagement,
+                  },
+                }
+              : {}),
           }
         : {}),
       ...(operationalMetrics && overrides.operationalMetrics
