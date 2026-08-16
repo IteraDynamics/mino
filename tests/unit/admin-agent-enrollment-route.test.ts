@@ -59,7 +59,12 @@ describe("admin agent enrollment route", () => {
               createdAt: "2026-08-15T20:00:00.000Z",
               updatedAt: "2026-08-15T20:00:00.000Z",
             },
-            audit: { sequence: 1n, chainDigest: "digest" },
+            audit: {
+              chainSequence: "1",
+              eventDigest: "event-digest",
+              chainDigest: "chain-digest",
+              signingKeyId: "audit-k1",
+            },
           };
         },
       },
@@ -107,7 +112,7 @@ describe("admin agent enrollment route", () => {
           authorize: async () => ({
             allowed: false as const,
             permission: "agent.create" as const,
-            reason: "PERMISSION_MISSING" as const,
+            reason: "PERMISSION_DENIED" as const,
           }),
         },
         agentEnrollment: {
