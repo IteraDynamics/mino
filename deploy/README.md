@@ -27,12 +27,15 @@ Set these before running Compose:
 ```text
 MINO_ISSUER
 MINO_MANDATE_PUBLIC_KEYS_B64_JSON
+MINO_MANDATE_SIGNING_KEY_ID
 MINO_DELEGATION_SIGNING_KEY_ID
 MINO_AUDIT_SIGNING_KEY_ID
 MINO_AUDIT_PUBLIC_KEYS_B64_JSON
 MINO_APPROVAL_WEBHOOK_URL
 MINO_AUDIT_CHECKPOINT_RETENTION_URL
 ```
+
+`MINO_MANDATE_SIGNING_KEY_ID` must identify the active public key inside `MINO_MANDATE_PUBLIC_KEYS_B64_JSON`. Startup verifies that the mounted mandate private key is Ed25519 and derives that exact public key. Historical mandate public keys may remain in the verification map while the active signing key rotates.
 
 Optional host-publication controls:
 
@@ -53,6 +56,7 @@ database_url
 redis_url
 postgres_password
 redis_password
+mandate_private_key.pem
 delegation_private_key.pem
 audit_private_key.pem
 approval_resolution_secret
@@ -66,7 +70,9 @@ metrics_bearer_token
 
 `redis_url` contains the authenticated Redis URL used by Mino, for example `redis://:password@redis:6379`. Its password must match `redis_password` when using the included Redis service. Mino accepts this through `REDIS_URL_FILE`; configuring both Redis URL sources likewise fails closed.
 
-Private-key files contain PEM directly. HMAC/token files contain the secret text directly. `merchant_credentials.json` uses the same organization/merchant-to-Bearer mapping documented by the production runtime.
+Private-key files contain PEM directly. The mandate, payment-delegation, and audit signing keys are deliberately separate authority domains and must not be collapsed onto one key. HMAC/token files contain the secret text directly. `merchant_credentials.json` uses the same organization/merchant-to-Bearer mapping documented by the production runtime.
+
+The mandate signing private key exists only so the configured runtime can issue new mandate bearer artifacts through the governed administrative issuance path. Mino does not persist raw mandate tokens and does not need historical mandate private keys merely to verify older unexpired tokens; retain the corresponding historical public keys instead for the verification lifetime you intend to support.
 
 Never commit real files from this directory. `deploy/secrets/.gitignore` keeps the secret directory deny-by-default.
 
@@ -82,7 +88,7 @@ PostgreSQL healthy
 Mino application may start
 ```
 
-If migration fails, the long-running Mino service is not started through this dependency chain. The migration service receives the database connection secret only; it does not receive Redis credentials, signing keys, merchant credentials, approval secrets, audit-retention credentials, or metrics credentials.
+If migration fails, the long-running Mino service is not started through this dependency chain. The migration service receives the database connection secret only; it does not receive Redis credentials, **mandate/delegation/audit signing keys**, merchant credentials, approval secrets, audit-retention credentials, or metrics credentials.
 
 Fresh databases are created from committed migration history. Existing databases that predate migration history require the one-time verified baseline procedure in `docs/database-migrations.md`; do not run the baseline CREATE statements blindly against an existing production schema.
 
@@ -118,6 +124,6 @@ The Compose PostgreSQL/Redis services are replaceable boundaries. In a managed e
 - Redis authentication/TLS/network isolation as supported by the provider
 - Redis no-eviction semantics for Mino authorization keys
 - Redis persistence/replication/availability appropriate to the deployment
-- independent secret management for database/Redis credentials
+- independent secret management for database/Redis credentials and each signing authority
 
 Mino still reconstructs safety-critical authorization state from PostgreSQL after complete Redis loss; persistence and replication reduce how often that recovery path is needed.
