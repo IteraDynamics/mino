@@ -97,7 +97,12 @@ export async function registerAdminMerchantAdministrationRoutes(
     try {
       return sendCreateResult(
         reply,
-        await dependencies.merchantAdministration.createMerchant(authorization, body.data),
+        await dependencies.merchantAdministration.createMerchant(authorization, {
+          externalMerchantId: body.data.externalMerchantId,
+          domain: body.data.domain,
+          ...(body.data.vendorId !== undefined ? { vendorId: body.data.vendorId } : {}),
+          baseUrl: body.data.baseUrl,
+        }),
       );
     } catch (error) {
       if (error instanceof AdminMerchantValidationError) {
