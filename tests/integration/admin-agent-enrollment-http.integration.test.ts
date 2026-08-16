@@ -55,12 +55,18 @@ integration("production administrative agent enrollment HTTP surface", () => {
   });
 
   afterAll(async () => {
+    const organizationIds = [organizationId, otherOrganizationId];
     await pool.query(`delete from "AgentIdentity" where "organizationId" = any($1::uuid[])`, [
-      [organizationId, otherOrganizationId],
+      organizationIds,
     ]);
-    await pool.query(`delete from "Organization" where "id" = any($1::uuid[])`, [
-      [organizationId, otherOrganizationId],
+    await pool.query(`delete from "AdminAuditLog" where "organizationId" = any($1::uuid[])`, [
+      organizationIds,
     ]);
+    await pool.query(
+      `delete from "AdminAuditChainHead" where "organizationId" = any($1::uuid[])`,
+      [organizationIds],
+    );
+    await pool.query(`delete from "Organization" where "id" = any($1::uuid[])`, [organizationIds]);
     await pool.query(`delete from "AdminPrincipal" where "id" = $1`, [principalId]);
     await pool.end();
   });
@@ -124,7 +130,7 @@ integration("production administrative agent enrollment HTTP surface", () => {
         `select "action", "resourceId"
            from "AdminAuditLog"
           where "organizationId" = $1::uuid
-          order by "sequence" asc`,
+          order by "chainSequence" asc`,
         [organizationId],
       );
       expect(auditRows.rows).toEqual([
