@@ -38,6 +38,7 @@ Mino is a policy, authorization, approval, and security control plane for agenti
 32. **Audited administrative agent enrollment** — an administrator with `agent.create` can enroll a new Ed25519 machine identity through the admin API. Creation and the signed administrative receipt commit atomically; exact equivalent retries replay safely without a second audit event, conflicting reuse is rejected, and enrollment alone grants no mandate or spend authority.
 33. **Audited administrative agent lifecycle** — organization-scoped detail, suspend/reactivate, and Ed25519 key rotation use narrow permissions and atomic signed receipts. Suspension immediately removes the identity from mandate/key resolution for new requests; reactivation is explicit; rotation immediately makes the previous key ID unusable; and idempotent retries do not create artificial audit history.
 34. **Audited administrative policy management** — administrators can create inactive versioned policies, create the explicit next immutable version, and activate/deactivate individual versions under narrow permissions. Exact retries replay without duplicate audit history, monetary values remain lossless decimal strings, activating a newer version does not implicitly revoke mandates bound to an older active version, and explicit deactivation makes mandates bound to that exact version fail closed immediately.
+35. **Audited administrative merchant administration** — administrators can register inactive organization-local merchants, perform routing maintenance only while inactive, and explicitly activate/deactivate the resulting endpoint through `merchant.manage`. External merchant IDs remain stable, routing is canonical HTTPS/domain-bound at both admin and outbound runtime boundaries, merchant credentials stay outside database/API/audit surfaces, and subsequent registry resolution immediately observes committed lifecycle/configuration changes.
 
 ## ACP trust boundary
 
@@ -75,6 +76,11 @@ POST /v1/admin/organizations/:organizationId/policies/:policyId/versions
 POST /v1/admin/organizations/:organizationId/policies/:policyId/activate
 POST /v1/admin/organizations/:organizationId/policies/:policyId/deactivate
 GET  /v1/admin/organizations/:organizationId/merchants
+GET  /v1/admin/organizations/:organizationId/merchants/:merchantId
+POST /v1/admin/organizations/:organizationId/merchants
+POST /v1/admin/organizations/:organizationId/merchants/:merchantId/configuration
+POST /v1/admin/organizations/:organizationId/merchants/:merchantId/activate
+POST /v1/admin/organizations/:organizationId/merchants/:merchantId/deactivate
 
 GET  /healthz
 GET  /readyz
@@ -83,7 +89,7 @@ GET  /metrics   # optional; dedicated Bearer credential required
 
 The ACP request body remains protocol-compatible. Mino-specific mandate and agent-proof material lives in headers. Approval bridge endpoints use separate timestamped HMAC authentication. See `openapi/mino.openapi.yaml`.
 
-Administrative routes are opt-in: they are not registered unless trusted admin JWT issuers are explicitly configured. The administrative write surface now covers audited agent enrollment/lifecycle plus versioned policy creation and explicit policy activation/deactivation. Actual mutations and their signed administrative receipts commit atomically, while replay/no-op requests do not manufacture audit history. Policy creation/configuration still does **not** bind a user to an agent or grant spend/payment authority; that remains a mandate operation. See `docs/admin-http-authentication.md`, `docs/admin-inventory.md`, `docs/admin-agent-enrollment.md`, `docs/admin-agent-lifecycle.md`, and `docs/admin-policy-management.md`.
+Administrative routes are opt-in: they are not registered unless trusted admin JWT issuers are explicitly configured. The administrative write surface now covers audited agent enrollment/lifecycle, versioned policy management, and organization-local merchant registration/lifecycle. Actual mutations and their signed administrative receipts commit atomically, while replay/no-op requests do not manufacture audit history. Merchant credentials remain runtime secret configuration rather than merchant-row or administrative payload data. Agent, policy, and merchant administration still do **not** bind a user to delegated spending authority; that remains a mandate operation. See `docs/admin-http-authentication.md`, `docs/admin-inventory.md`, `docs/admin-agent-enrollment.md`, `docs/admin-agent-lifecycle.md`, `docs/admin-policy-management.md`, and `docs/admin-merchant-administration.md`.
 
 ## Administrative authorization boundary
 
@@ -201,6 +207,6 @@ The GitHub verification gate additionally builds the runtime and migration conta
 
 ## Next implementation slice
 
-The next product slice is **PR #25 — audited administrative merchant administration**. It should add organization-local merchant registration and lifecycle management through `merchant.manage`, preserve the HTTPS/domain routing boundary, keep merchant credentials outside administrative API/database secret surfaces, and make activation or routing changes authoritative for subsequent merchant resolution. Every actual merchant mutation must commit atomically with its signed administrative change receipt, and merchant administration must not bypass mandate or policy merchant/vendor scope.
+The next product slice is **PR #26 — audited administrative mandate issuance and revocation**. It should add organization-scoped mandate detail/inventory, issue new delegated authority only for active organization-local resources through `mandate.issue`, bind the durable mandate snapshot to the intended user/agent/policy version and merchant/vendor scope, preserve signed token/JTI semantics and replay safety, and make `mandate.revoke` immediately fail closed at the existing transaction-path mandate resolver. This is the first remaining administrative slice that can grant economic authority, so issuance must not bypass current policy, reservation, approval, audit, payment-outcome, or reconciliation controls.
 
 The preserved roadmap through PR #30 is documented in `docs/ROADMAP.md`.
