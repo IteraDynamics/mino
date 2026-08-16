@@ -50,11 +50,19 @@ export async function registerAdminAgentEnrollmentRoutes(
       return;
     }
 
+    const enrollmentRequest: AdminAgentEnrollmentRequest = {
+      externalAgentId: parsedBody.data.externalAgentId,
+      ...(parsedBody.data.displayName ? { displayName: parsedBody.data.displayName } : {}),
+      keyId: parsedBody.data.keyId,
+      publicKey: parsedBody.data.publicKey,
+    };
+
     try {
-      const result = await dependencies.agentEnrollment.enroll(authorization, parsedBody.data);
+      const result = await dependencies.agentEnrollment.enroll(authorization, enrollmentRequest);
       switch (result.outcome) {
         case "CREATED":
           return reply.code(201).send({
+            outcome: result.outcome,
             requestId: result.requestId,
             created: true,
             agent: result.agent,
@@ -62,12 +70,17 @@ export async function registerAdminAgentEnrollmentRoutes(
           });
         case "REPLAYED":
           return reply.code(200).send({
+            outcome: result.outcome,
             requestId: result.requestId,
             created: false,
             agent: result.agent,
           });
         case "CONFLICT":
-          return reply.code(409).send({ error: "conflict", requestId: result.requestId });
+          return reply.code(409).send({
+            outcome: result.outcome,
+            error: "conflict",
+            requestId: result.requestId,
+          });
       }
     } catch (error) {
       if (error instanceof AdminAgentEnrollmentValidationError) {
