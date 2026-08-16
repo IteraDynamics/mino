@@ -25,6 +25,7 @@ import {
 import { PostgresAdminMandateManagementService } from "../modules/admin/admin-mandate-management.js";
 import { PostgresAdminMerchantAdministrationService } from "../modules/admin/admin-merchant-administration.js";
 import { PostgresAdminPolicyManagementService } from "../modules/admin/admin-policy-management.js";
+import { PostgresAdminTransactionApprovalOperations } from "../modules/admin/admin-transaction-approval-operations.js";
 import { AgentRequestVerifier } from "../modules/agents/agent-request-verifier.js";
 import { HmacApprovalResolutionAuthenticator } from "../modules/approvals/approval-resolution-authenticator.js";
 import {
@@ -247,6 +248,12 @@ export async function createProductionApplication(
           clock,
         )
       : undefined;
+    const adminTransactionApproval = new PostgresAdminTransactionApprovalOperations(
+      sql,
+      adminAudit,
+      generateId,
+      clock,
+    );
     const adminAuditVerifier = new PostgresAdminChangeAuditVerifier(sql, auditKeys);
     const adminAuditCheckpointIssuer = new PostgresAdminAuditCheckpointIssuer(sql, auditKeys);
     const retainedAdminAuditVerifier = new PostgresRetainedAdminAuditVerifier(
@@ -343,6 +350,10 @@ export async function createProductionApplication(
                   },
                 }
               : {}),
+            adminTransactionApproval: {
+              ...adminAccess,
+              operations: adminTransactionApproval,
+            },
           }
         : {}),
       ...(operationalMetrics && overrides.operationalMetrics
