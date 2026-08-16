@@ -12,6 +12,10 @@ export interface ProductionConfig {
   readonly port: number;
   readonly issuer: string;
   readonly mandateVerificationKeys: ReadonlyMap<string, string>;
+  readonly mandateSigningKey?: {
+    readonly keyId: string;
+    readonly privateKey: string;
+  };
   readonly delegationSigningKey: {
     readonly keyId: string;
     readonly privateKey: string;
@@ -38,6 +42,9 @@ const environmentSchema = z.object({
   MINO_PORT: z.string().regex(/^\d+$/).optional(),
   MINO_ISSUER: z.string().url(),
   MINO_MANDATE_PUBLIC_KEYS_B64_JSON: z.string().min(2),
+  MINO_MANDATE_SIGNING_KEY_ID: z.string().min(1),
+  MINO_MANDATE_PRIVATE_KEY_B64: z.string().min(1).optional(),
+  MINO_MANDATE_PRIVATE_KEY_FILE: z.string().min(1).optional(),
   MINO_DELEGATION_SIGNING_KEY_ID: z.string().min(1),
   MINO_DELEGATION_PRIVATE_KEY_B64: z.string().min(1).optional(),
   MINO_DELEGATION_PRIVATE_KEY_FILE: z.string().min(1).optional(),
@@ -87,6 +94,25 @@ export function loadProductionConfig(
     throw new Error("MINO_PORT must be an integer between 1 and 65535");
   }
 
+  const mandateVerificationKeys = parseBase64PemMap(
+    values.MINO_MANDATE_PUBLIC_KEYS_B64_JSON,
+    "MINO_MANDATE_PUBLIC_KEYS_B64_JSON",
+  );
+  const mandatePrivateKey = loadPrivatePemSecret(
+    values.MINO_MANDATE_PRIVATE_KEY_B64,
+    values.MINO_MANDATE_PRIVATE_KEY_FILE,
+    "MINO_MANDATE_PRIVATE_KEY",
+  );
+  const activeMandatePublicKey = mandateVerificationKeys.get(values.MINO_MANDATE_SIGNING_KEY_ID);
+  if (!activeMandatePublicKey) {
+    throw new Error("MINO_MANDATE_PUBLIC_KEYS_B64_JSON must contain the active mandate signing key ID");
+  }
+  assertEd25519KeyPair(
+    mandatePrivateKey,
+    activeMandatePublicKey,
+    "MINO_MANDATE_SIGNING_KEY_ID",
+  );
+
   const delegationPrivateKey = loadPrivatePemSecret(
     values.MINO_DELEGATION_PRIVATE_KEY_B64,
     values.MINO_DELEGATION_PRIVATE_KEY_FILE,
@@ -132,8 +158,7 @@ export function loadProductionConfig(
         ? { inline: values.MINO_APPROVAL_WEBHOOK_SECRET }
         : {}),
       ...(values.MINO_APPROVAL_WEBHOOK_SECRET_FILE
-        ? { file: values.MINO_APPROVAL_WEBHOOK_SECRET_FILE }
-        : {}),
+        ? { file: values.MINO_APPROVAL_WEBHOOK_SECRET_FILE } : {}),
     },
     "MINO_APPROVAL_WEBHOOK_SECRET",
   );
@@ -151,10 +176,11 @@ export function loadProductionConfig(
     host: values.MINO_HOST ?? DEFAULT_HOST,
     port,
     issuer: values.MINO_ISSUER,
-    mandateVerificationKeys: parseBase64PemMap(
-      values.MINO_MANDATE_PUBLIC_KEYS_B64_JSON,
-      "MINO_MANDATE_PUBLIC_KEYS_B64_JSON",
-    ),
+    mandateVerificationKeys,
+    mandateSigningKey: {
+      keyId: values.MINO_MANDATE_SIGNING_KEY_ID,
+      privateKey: mandatePrivateKey,
+    },
     delegationSigningKey: {
       keyId: values.MINO_DELEGATION_SIGNING_KEY_ID,
       privateKey: delegationPrivateKey,
