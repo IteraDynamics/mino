@@ -246,8 +246,9 @@ model AgentMandate {
   agentId        String @db.Uuid
   policyId       String @db.Uuid
 
-  tokenJtiHash  String @unique
-  policyVersion Int
+  issuanceKeyHash String?
+  tokenJtiHash    String @unique
+  policyVersion   Int
 
   currency               String @default("USD") @db.Char(3)
   maxBudgetMinor         BigInt @db.BigInt
@@ -280,6 +281,7 @@ model AgentMandate {
   reservations    SpendReservation[]
   paymentOutcomes PaymentOutcome[]
 
+  @@unique([organizationId, issuanceKeyHash])
   @@index([organizationId, agentId, status, expiresAt])
   @@index([userId, status])
 }
