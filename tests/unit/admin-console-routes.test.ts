@@ -34,7 +34,7 @@ describe("administrative web console", () => {
     await app.close();
   });
 
-  it("serves dedicated JavaScript and CSS assets without creating a browser credential store", async () => {
+  it("serves parseable JavaScript and CSS assets without creating a browser credential or HTML-injection path", async () => {
     const app = await consoleApp();
     const [script, styles] = await Promise.all([
       app.inject({ method: "GET", url: "/console/app.js" }),
@@ -48,17 +48,20 @@ describe("administrative web console", () => {
     expect(script.headers["cache-control"]).toContain("no-store");
     expect(styles.headers["cache-control"]).toContain("no-store");
 
+    expect(() => new Function(ADMIN_CONSOLE_JS)).not.toThrow();
     expect(ADMIN_CONSOLE_JS).not.toMatch(/localStorage|sessionStorage|indexedDB|document\.cookie/);
+    expect(ADMIN_CONSOLE_JS).not.toMatch(/\.innerHTML\s*=|insertAdjacentHTML|\beval\s*\(/);
     expect(ADMIN_CONSOLE_JS).toContain('credentials: "omit"');
     expect(ADMIN_CONSOLE_JS).toContain('cache: "no-store"');
     expect(ADMIN_CONSOLE_JS).toContain('referrerPolicy: "no-referrer"');
     expect(ADMIN_CONSOLE_JS).toContain('state.token = ""');
+    expect(ADMIN_CONSOLE_JS).not.toContain("state.mandateToken");
     expect(ADMIN_CONSOLE_HTML).toContain('autocomplete="off"');
 
     await app.close();
   });
 
-  it("uses existing governed APIs and does not invent payment or audit mutation routes", () => {
+  it("uses existing governed APIs and does not invent payment or audit mutation requests", () => {
     for (const path of [
       '"/access"',
       '"/agents"',
@@ -74,10 +77,10 @@ describe("administrative web console", () => {
       expect(ADMIN_CONSOLE_JS).toContain(path);
     }
 
-    expect(ADMIN_CONSOLE_JS).not.toContain("force-success");
-    expect(ADMIN_CONSOLE_JS).not.toContain("force-failure");
-    expect(ADMIN_CONSOLE_JS).not.toContain("release-reservation");
-    expect(ADMIN_CONSOLE_JS).not.toContain("repair-audit");
+    expect(ADMIN_CONSOLE_JS).not.toMatch(/apiRequest\([^\n]*(?:force-success|force-failure)/);
+    expect(ADMIN_CONSOLE_JS).not.toMatch(/apiRequest\([^\n]*(?:release|commit)-reservation/);
+    expect(ADMIN_CONSOLE_JS).not.toMatch(/apiRequest\([^\n]*(?:repair|rewind|delete)[^\n]*audit/);
+    expect(ADMIN_CONSOLE_JS).not.toMatch(/apiRequest\([^\n]*(?:trigger|run)[^\n]*reconcil/);
     expect(ADMIN_CONSOLE_JS).toContain("Four-eyes administrative governance is not implemented yet");
     expect(ADMIN_CONSOLE_JS).toContain("crypto.randomUUID()");
   });
