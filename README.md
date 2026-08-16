@@ -42,6 +42,7 @@ Mino is a policy, authorization, approval, and security control plane for agenti
 36. **Audited administrative mandate issuance and revocation** — an administrator can create delegated economic authority only for an active organization-local user, keyed active agent, and exact active policy version. Issuance copies that policy configuration into the durable mandate snapshot, uses a dedicated Ed25519 mandate-signing authority, persists only hashed JTI/idempotency material, returns the raw mandate token only on the initial successful creation response, and commits atomically with a signed administrative receipt. Revocation updates the same mandate source consumed by the transaction resolver and therefore fails subsequent use closed immediately even while the old token remains cryptographically valid.
 37. **Administrative transaction and approval operations** — authorized operators can inspect tenant-scoped durable approvals and payment outcomes through bounded safe projections. `approval.vote` lets a stable Mino admin principal participate in the existing transaction approval state machine, with distinct-voter, expiry, rejection, threshold, replay, and signed administrative-audit semantics preserved atomically. Payment outcomes remain read-only: no administrative endpoint can force success/failure, release held allowance, or replace merchant-authoritative reconciliation evidence.
 38. **Administrative audit and operational visibility** — authorized operators can page transaction and administrative audit chains through bounded safe projections, explicitly verify current chains and independently retained signed checkpoints, and inspect organization-scoped durable reconciliation, approval-delivery, reservation, and audit-head state. Read and verify permissions remain separate, transaction/admin integrity domains remain independent, and the surface cannot repair audit history, issue replacement checkpoints, trigger workers, or mutate economic truth.
+39. **First administrative web console** — when trusted admin JWT ingress is enabled, Mino serves a same-origin, permission-aware operator interface over the governed administrative APIs. The console keeps the externally issued administrator JWT only in page memory, uses no third-party scripts/assets or browser credential persistence, exposes one-time mandate bearer material only at initial issuance, and never becomes a parallel authorization/payment/audit authority. Sensitive actions are explicitly labeled as direct-RBAC because the separately planned four-eyes governance layer remains deferred.
 
 ## ACP trust boundary
 
@@ -99,6 +100,11 @@ POST /v1/admin/organizations/:organizationId/audit/transactions/verify
 POST /v1/admin/organizations/:organizationId/audit/administrative/verify
 GET  /v1/admin/organizations/:organizationId/operations
 
+GET  /console
+GET  /console/
+GET  /console/styles.css
+GET  /console/app.js
+
 GET  /healthz
 GET  /readyz
 GET  /metrics   # optional; dedicated Bearer credential required
@@ -106,7 +112,7 @@ GET  /metrics   # optional; dedicated Bearer credential required
 
 The ACP request body remains protocol-compatible. Mino-specific mandate and agent-proof material lives in headers. Approval bridge endpoints use separate timestamped HMAC authentication. See `openapi/mino.openapi.yaml`.
 
-Administrative routes are opt-in: they are not registered unless trusted admin JWT issuers are explicitly configured. The administrative write surface covers audited agent enrollment/lifecycle, versioned policy management, organization-local merchant registration/lifecycle, mandate issuance/revocation, and transaction-level approval voting. Actual mutations and their signed administrative receipts commit atomically, while replay/no-op requests do not manufacture audit history. Transaction approval voting preserves the existing human-approval state machine and still requires an exact transaction retry through normal authorization/revalidation before payment can proceed. Administrative payment, audit, and operations views are deliberately observational: audit inventories omit sensitive persisted payload/state material, explicit verification cannot rewrite a failed chain, retained checkpoints are supplied from the independent trust domain rather than fetched with a new Mino credential, and operational state cannot trigger reconciliation or mutate payment/reservation truth. See `docs/admin-http-authentication.md`, `docs/admin-inventory.md`, `docs/admin-agent-enrollment.md`, `docs/admin-agent-lifecycle.md`, `docs/admin-policy-management.md`, `docs/admin-merchant-administration.md`, `docs/admin-mandate-management.md`, `docs/admin-transaction-approval-operations.md`, and `docs/admin-audit-operations.md`.
+Administrative routes are opt-in: they are not registered unless trusted admin JWT issuers are explicitly configured. The administrative write surface covers audited agent enrollment/lifecycle, versioned policy management, organization-local merchant registration/lifecycle, mandate issuance/revocation, and transaction-level approval voting. Actual mutations and their signed administrative receipts commit atomically, while replay/no-op requests do not manufacture audit history. Transaction approval voting preserves the existing human-approval state machine and still requires an exact transaction retry through normal authorization/revalidation before payment can proceed. Administrative payment, audit, and operations views are deliberately observational: audit inventories omit sensitive persisted payload/state material, explicit verification cannot rewrite a failed chain, retained checkpoints are supplied from the independent trust domain rather than fetched with a new Mino credential, and operational state cannot trigger reconciliation or mutate payment/reservation truth. The first console is served only when this administrative boundary is enabled and calls these same APIs; it adds no browser-only permission or transaction semantics. See `docs/admin-http-authentication.md`, `docs/admin-inventory.md`, `docs/admin-agent-enrollment.md`, `docs/admin-agent-lifecycle.md`, `docs/admin-policy-management.md`, `docs/admin-merchant-administration.md`, `docs/admin-mandate-management.md`, `docs/admin-transaction-approval-operations.md`, `docs/admin-audit-operations.md`, and `docs/admin-web-console.md`.
 
 ## Administrative authorization boundary
 
@@ -222,10 +228,12 @@ npm run test:integration
 
 The GitHub verification gate additionally builds the runtime and migration container targets, verifies their authority split, executes the migration image with a mounted datasource secret, and validates security-relevant Compose properties.
 
-## Next implementation slice
+## Roadmap status after PR #30
 
-The next requested roadmap slice is **PR #30 — first web console**. It should consume the already-governed administrative APIs as a thin authenticated operator UI, preserve organization-local RBAC and exact backend permission failures, keep secret-bearing material out of browser persistence, and avoid adding browser-only business logic or alternate mutation paths.
+The requested implementation sequence through **PR #30 — first web console** is complete except for the deliberately deferred **high-risk administrative change governance / four-eyes** slice originally planned as roadmap #27.
 
-The separately planned **high-risk administrative change governance** slice remains deferred and unimplemented. Until that durable four-eyes layer exists, the first console must not present policy, merchant, mandate, identity, or other high-risk configuration transitions as four-eyes governed merely because they are visible in one UI.
+That governance gap remains explicit: policy activation, merchant lifecycle, mandate issuance/revocation, identity changes, and other sensitive transitions continue to use the existing pinned-issuer JWT, organization-local RBAC, narrow permissions, durable state invariants, and signed administrative audit, but they are not multi-human governed yet. The console labels this as **Direct RBAC mode** rather than implying a control that does not exist.
 
-The preserved roadmap through PR #30 is documented in `docs/ROADMAP.md`.
+No PR #31 is assigned by this document. A future high-risk governance implementation should layer durable proposer/approver semantics above the existing backend mutation boundaries and then be consumed by the console; it must not be simulated with browser-only approval logic.
+
+See `docs/ROADMAP.md` and `docs/admin-web-console.md`.
