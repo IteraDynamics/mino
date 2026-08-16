@@ -4,7 +4,7 @@ import { FetchACPMerchantClient, type MerchantEndpoint } from "../../src/modules
 const merchant: MerchantEndpoint = {
   id: "merchant-1",
   domain: "merchant.example",
-  baseUrl: "https://merchant.example/acp/",
+  baseUrl: "https://merchant.example",
   active: true,
 };
 
