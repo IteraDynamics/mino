@@ -2,10 +2,7 @@ import { generateKeyPairSync, randomUUID, sign, type KeyObject } from "node:cryp
 import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { DecisionReason } from "../../src/domain/evaluation/decision-reasons.js";
-import {
-  DecisionVerdict,
-  type PolicyDecision,
-} from "../../src/domain/evaluation/evaluation.types.js";
+import { DecisionVerdict, type PolicyDecision } from "../../src/domain/evaluation/evaluation.types.js";
 import type { ProductionConfig } from "../../src/infrastructure/config/production-config.js";
 import { StaticAuditKeyProvider } from "../../src/infrastructure/crypto/static-key-providers.js";
 import { PgSqlAdapter } from "../../src/infrastructure/postgres/pg-sql-adapter.js";
@@ -15,10 +12,7 @@ import {
 } from "../../src/modules/admin/admin-audit-checkpoint-retention.js";
 import { PostgresAdminChangeAuditLedger } from "../../src/modules/admin/admin-change-audit-ledger.js";
 import type { GatewayAuditEvent } from "../../src/modules/audit/audit-sink.js";
-import {
-  PostgresAuditLedger,
-  type AuditChainCheckpoint,
-} from "../../src/modules/audit/postgres-audit-ledger.js";
+import { PostgresAuditLedger, type AuditChainCheckpoint } from "../../src/modules/audit/postgres-audit-ledger.js";
 import { createProductionApplication } from "../../src/production/application.js";
 
 const integration = process.env.RUN_INTEGRATION_TESTS === "1" ? describe : describe.skip;
@@ -51,10 +45,245 @@ integration("production administrative audit and operations HTTP surface", () =>
 
   beforeAll(async () => {
     pool = new Pool({ connectionString: DATABASE_URL });
+    await seedAuthority();
+    await seedOperations();
+    await seedAdminIdentities();
+
+    const provider = new StaticAuditKeyProvider(
+      { keyId: "audit-http-k1", privateKey: pemPrivate(auditKeys.privateKey) },
+      new Map([["audit-http-k1", pemPublic(auditKeys.publicKey)]]),
+    );
+    const sql = new PgSqlAdapter(pool);
+    const transactionLedger = new PostgresAuditLedger(sql, provider);
+    const adminLedger = new PostgresAdminChangeAuditLedger(sql, provider);
+    const adminCheckpointIssuer = new PostgresAdminAuditCheckpointIssuer(sql, provider);
+
+    await transactionLedger.record(transactionEvent());
+    await adminLedger.append({
+      requestId: randomUUID(),
+      organizationId,
+      principalId: financePrincipalId,
+      membershipId: financeMembershipId,
+      timestamp: new Date(now.getTime() - 5 * 60_000),
+      permission: "mandate.revoke",
+      action: "mandate.revoke",
+      resourceType: "mandate",
+      resourceId: mandateId,
+      roles: ["FINANCE_MANAGER"],
+      beforeState: { status: "ACTIVE", token: "HTTP-ADMIN-STATE-SECRET" },
+      afterState: { status: "REVOKED" },
+      requestDigest: "HTTP-ADMIN-DIGEST-SECRET",
+      metadata: { authorization: "HTTP-ADMIN-METADATA-SECRET" },
+    });
+    transactionCheckpoint = await transactionLedger.issueCheckpoint(organizationId, now);
+    adminCheckpoint = await adminCheckpointIssuer.issueCheckpoint(organizationId, now);
+  });
+
+  afterAll(async () => {
+    const organizations = [organizationId, otherOrganizationId];
+    for (const table of [
+      "AdminAuditLog",
+      "AdminAuditChainHead",
+      "AuditLog",
+      "AuditChainHead",
+      "ApprovalRequest",
+      "PaymentOutcome",
+      "AgentMandate",
+      "Policy",
+      "AgentIdentity",
+      "User",
+    ]) {
+      await pool.query(`delete from "${table}" where "organizationId" = any($1::uuid[])`, [
+        organizations,
+      ]);
+    }
+    await pool.query(`delete from "Organization" where "id" = any($1::uuid[])`, [organizations]);
+    await pool.query(`delete from "AdminPrincipal" where "id" = any($1::uuid[])`, [
+      [financePrincipalId, auditorPrincipalId],
+    ]);
+    await pool.end();
+  });
+
+  it("exposes safe evidence, separates read/verify authority, and cannot mutate economic or audit truth", async () => {
+    const production = await createProductionApplication(productionConfig(), {
+      logger: false,
+      now: () => now,
+      adminJwtIssuers: [
+        {
+          issuer,
+          audience,
+          verificationKeys: new Map([["audit-http-rsa-1", pemPublic(jwtKeys.publicKey)]]),
+        },
+      ],
+    });
+    const financeHeaders = authHeaders("audit-finance");
+    const auditorHeaders = authHeaders("audit-auditor");
+    const base = `/v1/admin/organizations/${organizationId}`;
+
+    try {
+      const transactions = await production.app.inject({
+        method: "GET",
+        url: `${base}/audit/transactions`,
+        headers: financeHeaders,
+      });
+      expect(transactions.statusCode).toBe(200);
+      expect(transactions.headers["cache-control"]).toBe("no-store");
+      expect(transactions.json()).toMatchObject({
+        items: [{ chainSequence: "1", verdict: "ALLOW", operation: "complete_checkout" }],
+      });
+      for (const hidden of [
+        "HTTP-TX-PAYLOAD-SECRET",
+        "HTTP-TX-DIGEST-SECRET",
+        "requestedPayload",
+        "decisionSnapshot",
+        "integritySignature",
+      ]) {
+        expect(transactions.body).not.toContain(hidden);
+      }
+
+      const administrative = await production.app.inject({
+        method: "GET",
+        url: `${base}/audit/administrative`,
+        headers: financeHeaders,
+      });
+      expect(administrative.statusCode).toBe(200);
+      expect(administrative.json()).toMatchObject({
+        items: [
+          {
+            chainSequence: "1",
+            permission: "mandate.revoke",
+            action: "mandate.revoke",
+            resourceId: mandateId,
+          },
+        ],
+      });
+      for (const hidden of [
+        "HTTP-ADMIN-STATE-SECRET",
+        "HTTP-ADMIN-DIGEST-SECRET",
+        "HTTP-ADMIN-METADATA-SECRET",
+        "beforeState",
+        "afterState",
+        "integritySignature",
+      ]) {
+        expect(administrative.body).not.toContain(hidden);
+      }
+
+      const operations = await production.app.inject({
+        method: "GET",
+        url: `${base}/operations`,
+        headers: financeHeaders,
+      });
+      expect(operations.statusCode).toBe(200);
+      expect(operations.json()).toMatchObject({
+        operations: {
+          payments: {
+            unknown: 1,
+            unresolved: 1,
+            claimable: 1,
+            stale: 1,
+            highAttempt: 1,
+            oldestUnresolvedPaymentId: paymentId,
+          },
+          approvals: { pending: 1, notificationPending: 1, notificationClaimable: 1 },
+          audit: {
+            transaction: { headSequence: "1" },
+            administrative: { headSequence: "1" },
+          },
+        },
+      });
+      expect(operations.body).not.toContain("HTTP-PAYMENT-DIGEST-SECRET");
+      expect(operations.body).not.toContain("HTTP-APPROVAL-PAYLOAD-SECRET");
+
+      const financeVerify = await production.app.inject({
+        method: "POST",
+        url: `${base}/audit/transactions/verify`,
+        headers: financeHeaders,
+        payload: {},
+      });
+      expect(financeVerify.statusCode).toBe(403);
+
+      const transactionVerify = await production.app.inject({
+        method: "POST",
+        url: `${base}/audit/transactions/verify`,
+        headers: auditorHeaders,
+        payload: { retainedCheckpoint: transactionCheckpoint },
+      });
+      expect(transactionVerify.statusCode).toBe(200);
+      expect(transactionVerify.json()).toMatchObject({
+        chain: "transaction",
+        databaseVerification: { valid: true, checkedEvents: 1, headSequence: "1" },
+        retainedCheckpointVerification: { valid: true, checkedEvents: 1, headSequence: "1" },
+      });
+      expect(transactionVerify.body).not.toContain(transactionCheckpoint.signature);
+
+      const adminVerify = await production.app.inject({
+        method: "POST",
+        url: `${base}/audit/administrative/verify`,
+        headers: auditorHeaders,
+        payload: { retainedCheckpoint: adminCheckpoint },
+      });
+      expect(adminVerify.statusCode).toBe(200);
+      expect(adminVerify.json()).toMatchObject({
+        chain: "administrative",
+        databaseVerification: { valid: true, checkedEvents: 1, headSequence: "1" },
+        retainedCheckpointVerification: {
+          valid: true,
+          checkpointSequence: "1",
+          currentHeadSequence: "1",
+        },
+      });
+      expect(adminVerify.body).not.toContain(adminCheckpoint.signature);
+
+      expect(
+        (
+          await production.app.inject({
+            method: "GET",
+            url: `/v1/admin/organizations/${otherOrganizationId}/operations`,
+            headers: auditorHeaders,
+          })
+        ).statusCode,
+      ).toBe(403);
+      expect(
+        (
+          await production.app.inject({
+            method: "POST",
+            url: `${base}/operations/reconcile`,
+            headers: auditorHeaders,
+            payload: {},
+          })
+        ).statusCode,
+      ).toBe(404);
+      expect(
+        (
+          await production.app.inject({
+            method: "POST",
+            url: `${base}/audit/transactions/repair`,
+            headers: auditorHeaders,
+            payload: {},
+          })
+        ).statusCode,
+      ).toBe(404);
+
+      const outcome = await pool.query<{ status: string }>(
+        `select "status"::text as status from "PaymentOutcome" where "id" = $1::uuid`,
+        [paymentId],
+      );
+      expect(outcome.rows[0]?.status).toBe("UNKNOWN");
+      const adminHead = await pool.query<{ chainSequence: string }>(
+        `select "chainSequence"::text as "chainSequence"
+           from "AdminAuditChainHead" where "organizationId" = $1::uuid`,
+        [organizationId],
+      );
+      expect(adminHead.rows[0]?.chainSequence).toBe("1");
+    } finally {
+      await production.close();
+    }
+  });
+
+  async function seedAuthority(): Promise<void> {
     await pool.query(
       `insert into "Organization" ("id", "name", "createdAt", "updatedAt")
-       values ($1, 'Audit operations HTTP org', $3, $3),
-              ($2, 'Audit operations HTTP other org', $3, $3)`,
+       values ($1, 'Audit HTTP org', $3, $3), ($2, 'Other audit HTTP org', $3, $3)`,
       [organizationId, otherOrganizationId, now],
     );
     await pool.query(
@@ -105,7 +334,9 @@ integration("production administrative audit and operations HTTP surface", () =>
         new Date(now.getTime() + 86_400_000),
       ],
     );
+  }
 
+  async function seedOperations(): Promise<void> {
     await pool.query(
       `insert into "PaymentOutcome" (
          "id", "organizationId", "userId", "agentId", "mandateId", "reservationId",
@@ -155,13 +386,15 @@ integration("production administrative audit and operations HTTP surface", () =>
         new Date(now.getTime() + 30 * 60_000),
       ],
     );
+  }
 
+  async function seedAdminIdentities(): Promise<void> {
     await pool.query(
       `insert into "AdminPrincipal"
         ("id", "issuer", "subject", "status", "createdAt", "updatedAt")
        values
         ($1, $2, 'audit-finance', 'ACTIVE', $5, $5),
-        ($3, $2, 'audit-auditor', 'ACTIVE', $5, $5)`,
+        ($3, $4, 'audit-auditor', 'ACTIVE', $5, $5)`,
       [financePrincipalId, issuer, auditorPrincipalId, issuer, now],
     );
     await pool.query(
@@ -181,269 +414,10 @@ integration("production administrative audit and operations HTTP surface", () =>
     );
     await pool.query(
       `insert into "AdminRoleAssignment" ("id", "membershipId", "role", "assignedAt")
-       values
-        ($1, $2, 'FINANCE_MANAGER', $5),
-        ($3, $4, 'AUDITOR', $5)`,
+       values ($1, $2, 'FINANCE_MANAGER', $5), ($3, $4, 'AUDITOR', $5)`,
       [randomUUID(), financeMembershipId, randomUUID(), auditorMembershipId, now],
     );
-
-    const provider = new StaticAuditKeyProvider(
-      { keyId: "audit-http-k1", privateKey: pemPrivate(auditKeys.privateKey) },
-      new Map([["audit-http-k1", pemPublic(auditKeys.publicKey)]]),
-    );
-    const sql = new PgSqlAdapter(pool);
-    const transactionLedger = new PostgresAuditLedger(sql, provider);
-    const adminLedger = new PostgresAdminChangeAuditLedger(sql, provider);
-    const adminCheckpointIssuer = new PostgresAdminAuditCheckpointIssuer(sql, provider);
-
-    await transactionLedger.record(transactionEvent());
-    await adminLedger.append({
-      requestId: randomUUID(),
-      organizationId,
-      principalId: financePrincipalId,
-      membershipId: financeMembershipId,
-      timestamp: new Date(now.getTime() - 5 * 60_000),
-      permission: "mandate.revoke",
-      action: "mandate.revoke",
-      resourceType: "mandate",
-      resourceId: mandateId,
-      roles: ["FINANCE_MANAGER"],
-      beforeState: { status: "ACTIVE", token: "HTTP-ADMIN-STATE-SECRET" },
-      afterState: { status: "REVOKED" },
-      requestDigest: "HTTP-ADMIN-DIGEST-SECRET",
-      metadata: { authorization: "HTTP-ADMIN-METADATA-SECRET" },
-    });
-    transactionCheckpoint = await transactionLedger.issueCheckpoint(organizationId, now);
-    adminCheckpoint = await adminCheckpointIssuer.issueCheckpoint(organizationId, now);
-  });
-
-  afterAll(async () => {
-    const organizationIds = [organizationId, otherOrganizationId];
-    await pool.query(`delete from "AdminAuditLog" where "organizationId" = any($1::uuid[])`, [
-      organizationIds,
-    ]);
-    await pool.query(`delete from "AdminAuditChainHead" where "organizationId" = any($1::uuid[])`, [
-      organizationIds,
-    ]);
-    await pool.query(`delete from "AuditLog" where "organizationId" = any($1::uuid[])`, [
-      organizationIds,
-    ]);
-    await pool.query(`delete from "AuditChainHead" where "organizationId" = any($1::uuid[])`, [
-      organizationIds,
-    ]);
-    await pool.query(`delete from "ApprovalRequest" where "organizationId" = any($1::uuid[])`, [
-      organizationIds,
-    ]);
-    await pool.query(`delete from "PaymentOutcome" where "organizationId" = any($1::uuid[])`, [
-      organizationIds,
-    ]);
-    await pool.query(`delete from "AgentMandate" where "organizationId" = any($1::uuid[])`, [
-      organizationIds,
-    ]);
-    await pool.query(`delete from "Policy" where "organizationId" = any($1::uuid[])`, [
-      organizationIds,
-    ]);
-    await pool.query(`delete from "AgentIdentity" where "organizationId" = any($1::uuid[])`, [
-      organizationIds,
-    ]);
-    await pool.query(`delete from "User" where "organizationId" = any($1::uuid[])`, [
-      organizationIds,
-    ]);
-    await pool.query(`delete from "Organization" where "id" = any($1::uuid[])`, [organizationIds]);
-    await pool.query(`delete from "AdminPrincipal" where "id" = any($1::uuid[])`, [
-      [financePrincipalId, auditorPrincipalId],
-    ]);
-    await pool.end();
-  });
-
-  it("exposes safe read evidence, separates read/verify authority, and cannot mutate audit or economic truth", async () => {
-    const production = await createProductionApplication(productionConfig(), {
-      logger: false,
-      now: () => now,
-      adminJwtIssuers: [
-        {
-          issuer,
-          audience,
-          verificationKeys: new Map([["audit-http-rsa-1", pemPublic(jwtKeys.publicKey)]]),
-        },
-      ],
-    });
-    const financeHeaders = {
-      authorization: `Bearer ${adminToken(jwtKeys.privateKey, "audit-finance")}`,
-    };
-    const auditorHeaders = {
-      authorization: `Bearer ${adminToken(jwtKeys.privateKey, "audit-auditor")}`,
-    };
-    const base = `/v1/admin/organizations/${organizationId}`;
-
-    try {
-      const transactions = await production.app.inject({
-        method: "GET",
-        url: `${base}/audit/transactions?limit=10`,
-        headers: financeHeaders,
-      });
-      expect(transactions.statusCode).toBe(200);
-      expect(transactions.headers["cache-control"]).toBe("no-store");
-      expect(transactions.json()).toMatchObject({
-        items: [
-          {
-            chainSequence: "1",
-            verdict: "ALLOW",
-            operation: "complete_checkout",
-            merchantDomain: "shop.example.com",
-          },
-        ],
-      });
-      for (const secret of [
-        "HTTP-TX-PAYLOAD-SECRET",
-        "HTTP-TX-DIGEST-SECRET",
-        "requestedPayload",
-        "decisionSnapshot",
-        "integritySignature",
-      ]) {
-        expect(transactions.body).not.toContain(secret);
-      }
-
-      const administrative = await production.app.inject({
-        method: "GET",
-        url: `${base}/audit/administrative`,
-        headers: financeHeaders,
-      });
-      expect(administrative.statusCode).toBe(200);
-      expect(administrative.json()).toMatchObject({
-        items: [
-          {
-            chainSequence: "1",
-            permission: "mandate.revoke",
-            action: "mandate.revoke",
-            resourceId: mandateId,
-          },
-        ],
-      });
-      for (const secret of [
-        "HTTP-ADMIN-STATE-SECRET",
-        "HTTP-ADMIN-DIGEST-SECRET",
-        "HTTP-ADMIN-METADATA-SECRET",
-        "beforeState",
-        "afterState",
-        "integritySignature",
-      ]) {
-        expect(administrative.body).not.toContain(secret);
-      }
-
-      const operations = await production.app.inject({
-        method: "GET",
-        url: `${base}/operations`,
-        headers: financeHeaders,
-      });
-      expect(operations.statusCode).toBe(200);
-      expect(operations.json()).toMatchObject({
-        operations: {
-          payments: {
-            unknown: 1,
-            unresolved: 1,
-            claimable: 1,
-            stale: 1,
-            highAttempt: 1,
-            oldestUnresolvedPaymentId: paymentId,
-          },
-          approvals: {
-            pending: 1,
-            notificationPending: 1,
-            notificationClaimable: 1,
-          },
-          audit: {
-            transaction: { headSequence: "1" },
-            administrative: { headSequence: "1" },
-          },
-        },
-      });
-      expect(operations.body).not.toContain("HTTP-PAYMENT-DIGEST-SECRET");
-      expect(operations.body).not.toContain("HTTP-APPROVAL-PAYLOAD-SECRET");
-
-      const financeVerify = await production.app.inject({
-        method: "POST",
-        url: `${base}/audit/transactions/verify`,
-        headers: financeHeaders,
-        payload: {},
-      });
-      expect(financeVerify.statusCode).toBe(403);
-
-      const transactionVerify = await production.app.inject({
-        method: "POST",
-        url: `${base}/audit/transactions/verify`,
-        headers: auditorHeaders,
-        payload: { retainedCheckpoint: transactionCheckpoint },
-      });
-      expect(transactionVerify.statusCode).toBe(200);
-      expect(transactionVerify.json()).toMatchObject({
-        chain: "transaction",
-        databaseVerification: { valid: true, checkedEvents: 1, headSequence: "1" },
-        retainedCheckpointVerification: { valid: true, checkedEvents: 1, headSequence: "1" },
-      });
-      expect(transactionVerify.body).not.toContain(transactionCheckpoint.signature);
-
-      const adminVerify = await production.app.inject({
-        method: "POST",
-        url: `${base}/audit/administrative/verify`,
-        headers: auditorHeaders,
-        payload: { retainedCheckpoint: adminCheckpoint },
-      });
-      expect(adminVerify.statusCode).toBe(200);
-      expect(adminVerify.json()).toMatchObject({
-        chain: "administrative",
-        databaseVerification: { valid: true, checkedEvents: 1, headSequence: "1" },
-        retainedCheckpointVerification: {
-          valid: true,
-          checkpointSequence: "1",
-          currentHeadSequence: "1",
-        },
-      });
-      expect(adminVerify.body).not.toContain(adminCheckpoint.signature);
-
-      const wrongTenant = await production.app.inject({
-        method: "GET",
-        url: `/v1/admin/organizations/${otherOrganizationId}/operations`,
-        headers: auditorHeaders,
-      });
-      expect(wrongTenant.statusCode).toBe(403);
-
-      const nonexistentWorkerTrigger = await production.app.inject({
-        method: "POST",
-        url: `${base}/operations/reconcile`,
-        headers: auditorHeaders,
-        payload: {},
-      });
-      expect(nonexistentWorkerTrigger.statusCode).toBe(404);
-      const nonexistentAuditRepair = await production.app.inject({
-        method: "POST",
-        url: `${base}/audit/transactions/repair`,
-        headers: auditorHeaders,
-        payload: {},
-      });
-      expect(nonexistentAuditRepair.statusCode).toBe(404);
-
-      expect(
-        (
-          await pool.query<{ status: string }>(
-            `select "status"::text as status from "PaymentOutcome" where "id" = $1::uuid`,
-            [paymentId],
-          )
-        ).rows[0]?.status,
-      ).toBe("UNKNOWN");
-      expect(
-        (
-          await pool.query<{ chainSequence: string }>(
-            `select "chainSequence"::text as "chainSequence"
-               from "AdminAuditChainHead" where "organizationId" = $1::uuid`,
-            [organizationId],
-          )
-        ).rows[0]?.chainSequence,
-      ).toBe("1");
-    } finally {
-      await production.close();
-    }
-  });
+  }
 
   function transactionEvent(): GatewayAuditEvent {
     const requestId = randomUUID();
@@ -485,6 +459,10 @@ integration("production administrative audit and operations HTTP surface", () =>
       reservationId: `http-audit-reservation-${randomUUID()}`,
       upstreamStatus: 200,
     };
+  }
+
+  function authHeaders(subject: string) {
+    return { authorization: `Bearer ${adminToken(jwtKeys.privateKey, subject)}` };
   }
 
   function productionConfig(): ProductionConfig {
