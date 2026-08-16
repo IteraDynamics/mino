@@ -41,6 +41,7 @@ Mino is a policy, authorization, approval, and security control plane for agenti
 35. **Audited administrative merchant administration** — administrators can register inactive organization-local merchants, perform routing maintenance only while inactive, and explicitly activate/deactivate the resulting endpoint through `merchant.manage`. External merchant IDs remain stable, routing is canonical HTTPS/domain-bound at both admin and outbound runtime boundaries, merchant credentials stay outside database/API/audit surfaces, and subsequent registry resolution immediately observes committed lifecycle/configuration changes.
 36. **Audited administrative mandate issuance and revocation** — an administrator can create delegated economic authority only for an active organization-local user, keyed active agent, and exact active policy version. Issuance copies that policy configuration into the durable mandate snapshot, uses a dedicated Ed25519 mandate-signing authority, persists only hashed JTI/idempotency material, returns the raw mandate token only on the initial successful creation response, and commits atomically with a signed administrative receipt. Revocation updates the same mandate source consumed by the transaction resolver and therefore fails subsequent use closed immediately even while the old token remains cryptographically valid.
 37. **Administrative transaction and approval operations** — authorized operators can inspect tenant-scoped durable approvals and payment outcomes through bounded safe projections. `approval.vote` lets a stable Mino admin principal participate in the existing transaction approval state machine, with distinct-voter, expiry, rejection, threshold, replay, and signed administrative-audit semantics preserved atomically. Payment outcomes remain read-only: no administrative endpoint can force success/failure, release held allowance, or replace merchant-authoritative reconciliation evidence.
+38. **Administrative audit and operational visibility** — authorized operators can page transaction and administrative audit chains through bounded safe projections, explicitly verify current chains and independently retained signed checkpoints, and inspect organization-scoped durable reconciliation, approval-delivery, reservation, and audit-head state. Read and verify permissions remain separate, transaction/admin integrity domains remain independent, and the surface cannot repair audit history, issue replacement checkpoints, trigger workers, or mutate economic truth.
 
 ## ACP trust boundary
 
@@ -92,6 +93,11 @@ GET  /v1/admin/organizations/:organizationId/approvals/:approvalRequestId
 POST /v1/admin/organizations/:organizationId/approvals/:approvalRequestId/votes
 GET  /v1/admin/organizations/:organizationId/payments
 GET  /v1/admin/organizations/:organizationId/payments/:paymentOutcomeId
+GET  /v1/admin/organizations/:organizationId/audit/transactions
+GET  /v1/admin/organizations/:organizationId/audit/administrative
+POST /v1/admin/organizations/:organizationId/audit/transactions/verify
+POST /v1/admin/organizations/:organizationId/audit/administrative/verify
+GET  /v1/admin/organizations/:organizationId/operations
 
 GET  /healthz
 GET  /readyz
@@ -100,7 +106,7 @@ GET  /metrics   # optional; dedicated Bearer credential required
 
 The ACP request body remains protocol-compatible. Mino-specific mandate and agent-proof material lives in headers. Approval bridge endpoints use separate timestamped HMAC authentication. See `openapi/mino.openapi.yaml`.
 
-Administrative routes are opt-in: they are not registered unless trusted admin JWT issuers are explicitly configured. The administrative write surface covers audited agent enrollment/lifecycle, versioned policy management, organization-local merchant registration/lifecycle, mandate issuance/revocation, and transaction-level approval voting. Actual mutations and their signed administrative receipts commit atomically, while replay/no-op requests do not manufacture audit history. Transaction approval voting preserves the existing human-approval state machine and still requires an exact transaction retry through normal authorization/revalidation before payment can proceed. Administrative payment-outcome routes are deliberately read-only and never expose merchant response bodies/headers, idempotency material, reconciliation lease ownership, or credentials. See `docs/admin-http-authentication.md`, `docs/admin-inventory.md`, `docs/admin-agent-enrollment.md`, `docs/admin-agent-lifecycle.md`, `docs/admin-policy-management.md`, `docs/admin-merchant-administration.md`, `docs/admin-mandate-management.md`, and `docs/admin-transaction-approval-operations.md`.
+Administrative routes are opt-in: they are not registered unless trusted admin JWT issuers are explicitly configured. The administrative write surface covers audited agent enrollment/lifecycle, versioned policy management, organization-local merchant registration/lifecycle, mandate issuance/revocation, and transaction-level approval voting. Actual mutations and their signed administrative receipts commit atomically, while replay/no-op requests do not manufacture audit history. Transaction approval voting preserves the existing human-approval state machine and still requires an exact transaction retry through normal authorization/revalidation before payment can proceed. Administrative payment, audit, and operations views are deliberately observational: audit inventories omit sensitive persisted payload/state material, explicit verification cannot rewrite a failed chain, retained checkpoints are supplied from the independent trust domain rather than fetched with a new Mino credential, and operational state cannot trigger reconciliation or mutate payment/reservation truth. See `docs/admin-http-authentication.md`, `docs/admin-inventory.md`, `docs/admin-agent-enrollment.md`, `docs/admin-agent-lifecycle.md`, `docs/admin-policy-management.md`, `docs/admin-merchant-administration.md`, `docs/admin-mandate-management.md`, `docs/admin-transaction-approval-operations.md`, and `docs/admin-audit-operations.md`.
 
 ## Administrative authorization boundary
 
@@ -218,8 +224,8 @@ The GitHub verification gate additionally builds the runtime and migration conta
 
 ## Next implementation slice
 
-The next requested roadmap slice is **PR #29 — audit and operations APIs**. It should expose organization-scoped verification and operational health/read models using `audit.read`, `audit.verify`, and related narrow permissions, preserve separate transaction/admin integrity domains and safe projections, and avoid turning observability into a state-mutation or secret-retrieval surface.
+The next requested roadmap slice is **PR #30 — first web console**. It should consume the already-governed administrative APIs as a thin authenticated operator UI, preserve organization-local RBAC and exact backend permission failures, keep secret-bearing material out of browser persistence, and avoid adding browser-only business logic or alternate mutation paths.
 
-The separately planned **high-risk administrative change governance** slice remains deferred and unimplemented; nothing in PR #28 should be interpreted as four-eyes governance for policy, merchant, mandate, identity, or other administrative configuration changes.
+The separately planned **high-risk administrative change governance** slice remains deferred and unimplemented. Until that durable four-eyes layer exists, the first console must not present policy, merchant, mandate, identity, or other high-risk configuration transitions as four-eyes governed merely because they are visible in one UI.
 
 The preserved roadmap through PR #30 is documented in `docs/ROADMAP.md`.
