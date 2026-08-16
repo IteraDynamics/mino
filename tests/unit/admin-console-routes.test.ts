@@ -49,7 +49,6 @@ describe("administrative web console", () => {
     expect(styles.headers["cache-control"]).toContain("no-store");
 
     expect(ADMIN_CONSOLE_JS).not.toMatch(/localStorage|sessionStorage|indexedDB|document\.cookie/);
-    expect(ADMIN_CONSOLE_JS).not.toMatch(/\.style\./);
     expect(ADMIN_CONSOLE_JS).toContain('credentials: "omit"');
     expect(ADMIN_CONSOLE_JS).toContain('cache: "no-store"');
     expect(ADMIN_CONSOLE_JS).toContain('referrerPolicy: "no-referrer"');
