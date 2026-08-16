@@ -138,7 +138,7 @@ integration("production administrative agent enrollment HTTP surface", () => {
       ]);
       expect(await production.adminAuditVerifier.verifyOrganization(organizationId)).toMatchObject({
         valid: true,
-        verifiedEvents: 1n,
+        checkedEvents: 1,
       });
 
       const replayed = await production.app.inject({ method: "POST", url, headers, payload });
