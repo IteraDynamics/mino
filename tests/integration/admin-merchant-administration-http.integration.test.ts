@@ -62,7 +62,7 @@ integration("production administrative merchant administration HTTP surface", ()
 
   it("changes the production merchant resolver immediately without exposing merchant credentials", async () => {
     const credential = "Bearer merchant-runtime-secret";
-    const config = productionConfig(credential);
+    const config = productionConfig(organizationId, credential);
     const publicPem = jwtKeys.publicKey.export({ type: "spki", format: "pem" }).toString();
     const production = await createProductionApplication(config, {
       logger: false,
@@ -289,7 +289,7 @@ function token(privateKey: KeyObject): string {
   return `${header}.${payload}.${signature}`;
 }
 
-function productionConfig(credential: string): ProductionConfig {
+function productionConfig(organizationId: string, credential: string): ProductionConfig {
   const mandateKeys = generateKeyPairSync("ed25519");
   const delegationKeys = generateKeyPairSync("ed25519");
   const auditKeys = generateKeyPairSync("ed25519");
