@@ -35,6 +35,7 @@ class CapturingInventory implements AdminInventoryRepository {
   public agentRequests: unknown[] = [];
   public policyRequests: unknown[] = [];
   public merchantRequests: unknown[] = [];
+  public mandateRequests: unknown[] = [];
 
   public async listAgents(input: unknown) {
     this.agentRequests.push(input);
@@ -49,6 +50,11 @@ class CapturingInventory implements AdminInventoryRepository {
   public async listMerchants(input: unknown) {
     this.merchantRequests.push(input);
     return { items: [{ id: "merchant-1" }] } as never;
+  }
+
+  public async listMandates(input: unknown) {
+    this.mandateRequests.push(input);
+    return { items: [{ id: "mandate-1" }] } as never;
   }
 }
 
@@ -83,17 +89,30 @@ describe("admin inventory routes", () => {
       url: `/v1/admin/organizations/${organizationId}/merchants?limit=100`,
       headers,
     });
+    const mandates = await app.inject({
+      method: "GET",
+      url: `/v1/admin/organizations/${organizationId}/mandates?limit=10`,
+      headers,
+    });
 
-    expect([agents.statusCode, policies.statusCode, merchants.statusCode]).toEqual([200, 200, 200]);
+    expect([agents.statusCode, policies.statusCode, merchants.statusCode, mandates.statusCode]).toEqual([
+      200,
+      200,
+      200,
+      200,
+    ]);
     expect(authorizer.requests.map((request) => request.permission)).toEqual([
       "agent.read",
       "policy.read",
       "merchant.read",
+      "mandate.read",
     ]);
     expect(inventory.agentRequests).toEqual([{ organizationId, limit: 25, cursor }]);
     expect(inventory.policyRequests).toEqual([{ organizationId, limit: 50 }]);
     expect(inventory.merchantRequests).toEqual([{ organizationId, limit: 100 }]);
+    expect(inventory.mandateRequests).toEqual([{ organizationId, limit: 10 }]);
     expect(agents.headers["cache-control"]).toBe("no-store");
+    expect(mandates.headers["cache-control"]).toBe("no-store");
     await app.close();
   });
 
