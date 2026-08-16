@@ -4,9 +4,31 @@ This document preserves the planned sequencing after PR #23 so future work does 
 
 The roadmap is a sequencing and architecture contract, not a frozen endpoint specification. Each pull request should still begin by reconciling the intended slice with the current schema, runtime, and preceding merged head.
 
+## Implementation status
+
+The requested implementation sequence through PR #30 is now complete except for the deliberately deferred high-risk administrative change-governance slice originally planned as roadmap PR #27.
+
+Implemented:
+
+- #23 — audited administrative agent lifecycle;
+- #24 — policy management;
+- #25 — merchant administration;
+- #26 — mandate issuance and revocation;
+- #28 — transaction and approval administrative APIs;
+- #29 — audit and operations APIs;
+- #30 — first web console.
+
+Deferred and still unimplemented:
+
+- roadmap #27 — high-risk administrative change governance / durable four-eyes separation of duties.
+
+GitHub PR #27 itself was a short-lived draft of the transaction/approval work and was closed unmerged solely to preserve the requested repository numbering for PR #28. It must not be interpreted as implementation of the roadmap #27 governance slice.
+
+Until that governance slice is implemented, sensitive administrative actions remain protected by the existing pinned-issuer authentication, organization-local RBAC, narrow permissions, durable state invariants, and signed administrative audit, but they are **not** multi-human/four-eyes governed.
+
 ## Governing implementation rules
 
-The following rules carry across every remaining administrative slice:
+The following rules carry across every administrative slice:
 
 - build each PR from the current merged `main` and keep the scope narrow;
 - require the GitHub verification gate to pass on the exact head that will be merged;
@@ -85,6 +107,8 @@ This is the first administrative slice that can grant economic authority. It mus
 
 ### PR #27 — High-risk administrative change governance
 
+**Status: deferred and unimplemented.**
+
 Layer explicit governance above RBAC for security-sensitive administrative changes.
 
 Planned scope:
@@ -139,18 +163,21 @@ These APIs are observational/verification surfaces. They must not become mutatio
 
 ### PR #30 — First web console
 
-Build the first Mino administrative web console on top of the completed authenticated control-plane APIs.
+Build the first Mino administrative web console on top of the authenticated control-plane APIs.
 
-Planned scope:
+Implemented scope:
 
-- organization/access context and permission-aware navigation;
+- organization/access context and exact permission-aware navigation;
 - agent enrollment and lifecycle management;
 - policy management;
 - merchant administration;
-- mandate issuance/revocation;
-- high-risk administrative approval/governance flows;
+- mandate issuance/revocation with one-time bearer-token handling;
 - transaction/payment and approval visibility;
-- audit verification and operational visibility.
+- transaction approval voting through the existing approval state machine;
+- audit verification and operational visibility;
+- same-origin first-party assets served by the existing Fastify runtime;
+- memory-only use of an externally issued administrative JWT rather than a new Mino browser-session authority;
+- explicit Direct RBAC labeling because the separately planned high-risk governance flow remains unavailable.
 
 Console rules:
 
@@ -158,22 +185,24 @@ Console rules:
 - server APIs remain the authorization and validation authority for every operation;
 - the browser must not receive Mino private signing keys, merchant credentials, retention secrets, or other server-side secret material;
 - unauthorized controls should be absent or disabled for usability, but server-side permission enforcement remains mandatory;
-- console work should not silently redesign core transaction semantics merely to simplify UI implementation.
+- secret-bearing administrative credentials must not be persisted in browser storage;
+- console work should not silently redesign core transaction semantics merely to simplify UI implementation;
+- the console must not represent a direct-RBAC action as four-eyes governed while roadmap #27 remains deferred.
 
-## Planned PR sequence
+## Roadmap status
 
-| PR | Slice | Phase |
+| Roadmap PR | Slice | Status |
 | --- | --- | --- |
-| #23 | Audited administrative agent lifecycle | Completed configuration foundation |
-| #24 | Policy management | Configuration plane |
-| #25 | Merchant administration | Configuration plane |
-| #26 | Mandate issuance and revocation | Configuration plane |
-| #27 | High-risk administrative change governance | Governance |
-| #28 | Transaction and approval administrative APIs | Operations |
-| #29 | Audit and operations APIs | Operations |
-| #30 | First web console | Product surface |
+| #23 | Audited administrative agent lifecycle | Implemented |
+| #24 | Policy management | Implemented |
+| #25 | Merchant administration | Implemented |
+| #26 | Mandate issuance and revocation | Implemented |
+| #27 | High-risk administrative change governance | **Deferred / not implemented** |
+| #28 | Transaction and approval administrative APIs | Implemented |
+| #29 | Audit and operations APIs | Implemented |
+| #30 | First web console | Implemented by PR #30 |
 
-The intended dependency chain is therefore:
+The originally intended dependency chain was:
 
 ```text
 agent identity
@@ -186,4 +215,4 @@ agent identity
     -> web console
 ```
 
-PR numbering is part of the preserved plan. Documentation-only cleanup for these slices should normally remain inside the relevant implementation PR rather than consuming one of the planned numbers.
+The requested implementation intentionally proceeded with #28–#30 while #27 remained deferred. Those later slices therefore preserve the direct-RBAC boundary and do not claim the missing four-eyes property. A future implementation of high-risk governance should layer above the durable mutation APIs and then be consumed by the console; it must not be emulated with browser-only approval logic.
