@@ -1,6 +1,6 @@
 # Administrative agent lifecycle
 
-PR #23 extends Mino's administrative control plane beyond enrollment so an authorized operator can inspect and control an enrolled agent's security lifecycle.
+Mino's administrative control plane supports inspecting and controlling an enrolled agent's security lifecycle after enrollment.
 
 ## HTTP surface
 
@@ -58,7 +58,7 @@ BEGIN
 COMMIT
 ```
 
-A failed mutation or audit append rolls back the whole transaction. Replay/no-op requests do not generate artificial audit history.
+The row lock serializes competing lifecycle transitions for the same agent. A failed mutation or audit append rolls back the whole transaction. Replay/no-op requests do not generate artificial audit history.
 
 Audit before/after snapshots contain the agent key ID and SHA-256 public-key fingerprint, never the raw public key body.
 
