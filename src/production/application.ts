@@ -22,6 +22,7 @@ import {
   AdminJwtAuthenticator,
   type AdminJwtIssuerConfig,
 } from "../modules/admin/admin-jwt-authenticator.js";
+import { PostgresAdminPolicyManagementService } from "../modules/admin/admin-policy-management.js";
 import { AgentRequestVerifier } from "../modules/agents/agent-request-verifier.js";
 import { HmacApprovalResolutionAuthenticator } from "../modules/approvals/approval-resolution-authenticator.js";
 import {
@@ -221,6 +222,12 @@ export async function createProductionApplication(
       generateId,
       clock,
     );
+    const adminPolicyManagement = new PostgresAdminPolicyManagementService(
+      sql,
+      adminAudit,
+      generateId,
+      clock,
+    );
     const adminAuditVerifier = new PostgresAdminChangeAuditVerifier(sql, auditKeys);
     const adminAuditCheckpointIssuer = new PostgresAdminAuditCheckpointIssuer(sql, auditKeys);
     const retainedAdminAuditVerifier = new PostgresRetainedAdminAuditVerifier(
@@ -300,6 +307,10 @@ export async function createProductionApplication(
             adminAgentLifecycle: {
               ...adminAccess,
               agentLifecycle: adminAgentLifecycle,
+            },
+            adminPolicyManagement: {
+              ...adminAccess,
+              policyManagement: adminPolicyManagement,
             },
           }
         : {}),

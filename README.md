@@ -37,6 +37,7 @@ Mino is a policy, authorization, approval, and security control plane for agenti
 31. **Independent administrative-audit checkpoint retention** — signed administrative chain-head checkpoints are exported to the separate HTTPS/HMAC retention boundary with admin-specific stable event IDs. A retained checkpoint can detect coherent PostgreSQL suffix deletion even when an attacker rewinds the mutable local admin chain head to make the shortened database internally consistent.
 32. **Audited administrative agent enrollment** — an administrator with `agent.create` can enroll a new Ed25519 machine identity through the admin API. Creation and the signed administrative receipt commit atomically; exact equivalent retries replay safely without a second audit event, conflicting reuse is rejected, and enrollment alone grants no mandate or spend authority.
 33. **Audited administrative agent lifecycle** — organization-scoped detail, suspend/reactivate, and Ed25519 key rotation use narrow permissions and atomic signed receipts. Suspension immediately removes the identity from mandate/key resolution for new requests; reactivation is explicit; rotation immediately makes the previous key ID unusable; and idempotent retries do not create artificial audit history.
+34. **Audited administrative policy management** — administrators can create inactive versioned policies, create the explicit next immutable version, and activate/deactivate individual versions under narrow permissions. Exact retries replay without duplicate audit history, monetary values remain lossless decimal strings, activating a newer version does not implicitly revoke mandates bound to an older active version, and explicit deactivation makes mandates bound to that exact version fail closed immediately.
 
 ## ACP trust boundary
 
@@ -68,6 +69,11 @@ POST /v1/admin/organizations/:organizationId/agents/:agentId/suspend
 POST /v1/admin/organizations/:organizationId/agents/:agentId/reactivate
 POST /v1/admin/organizations/:organizationId/agents/:agentId/rotate-key
 GET  /v1/admin/organizations/:organizationId/policies
+GET  /v1/admin/organizations/:organizationId/policies/:policyId
+POST /v1/admin/organizations/:organizationId/policies
+POST /v1/admin/organizations/:organizationId/policies/:policyId/versions
+POST /v1/admin/organizations/:organizationId/policies/:policyId/activate
+POST /v1/admin/organizations/:organizationId/policies/:policyId/deactivate
 GET  /v1/admin/organizations/:organizationId/merchants
 
 GET  /healthz
@@ -77,7 +83,7 @@ GET  /metrics   # optional; dedicated Bearer credential required
 
 The ACP request body remains protocol-compatible. Mino-specific mandate and agent-proof material lives in headers. Approval bridge endpoints use separate timestamped HMAC authentication. See `openapi/mino.openapi.yaml`.
 
-Administrative routes are opt-in: they are not registered unless trusted admin JWT issuers are explicitly configured. Inventory routes remain read-only. The write surface now covers audited agent identity enrollment plus narrowly permissioned suspend/reactivate and Ed25519 key rotation. Every actual lifecycle transition and its signed administrative receipt commit on one PostgreSQL transaction; replay/no-op requests do not manufacture audit events. Enrollment and lifecycle operations still do **not** create a mandate, attach a policy, or grant spend/payment authority. See `docs/admin-http-authentication.md`, `docs/admin-inventory.md`, `docs/admin-agent-enrollment.md`, and `docs/admin-agent-lifecycle.md`.
+Administrative routes are opt-in: they are not registered unless trusted admin JWT issuers are explicitly configured. The administrative write surface now covers audited agent enrollment/lifecycle plus versioned policy creation and explicit policy activation/deactivation. Actual mutations and their signed administrative receipts commit atomically, while replay/no-op requests do not manufacture audit history. Policy creation/configuration still does **not** bind a user to an agent or grant spend/payment authority; that remains a mandate operation. See `docs/admin-http-authentication.md`, `docs/admin-inventory.md`, `docs/admin-agent-enrollment.md`, `docs/admin-agent-lifecycle.md`, and `docs/admin-policy-management.md`.
 
 ## Administrative authorization boundary
 
@@ -195,6 +201,6 @@ The GitHub verification gate additionally builds the runtime and migration conta
 
 ## Next implementation slice
 
-The next product slice is **PR #24 — audited administrative policy management**. It should add organization-scoped policy detail, draft/version creation, safe activation/deactivation, and governed editing of the existing limits, merchant/vendor scope, restricted categories, approval mode, velocity, and cross-merchant controls. Policy mutations must reuse the authenticated organization-local admin boundary and atomically append signed administrative change receipts. Policy administration defines governance configuration but does **not** itself grant an agent spending authority; mandate issuance remains PR #26.
+The next product slice is **PR #25 — audited administrative merchant administration**. It should add organization-local merchant registration and lifecycle management through `merchant.manage`, preserve the HTTPS/domain routing boundary, keep merchant credentials outside administrative API/database secret surfaces, and make activation or routing changes authoritative for subsequent merchant resolution. Every actual merchant mutation must commit atomically with its signed administrative change receipt, and merchant administration must not bypass mandate or policy merchant/vendor scope.
 
 The preserved roadmap through PR #30 is documented in `docs/ROADMAP.md`.
