@@ -252,12 +252,18 @@ describe("admin mandate management routes", () => {
   it("does not redeliver a raw token on an issuance replay", async () => {
     const organizationId = randomUUID();
     const current = mandate(organizationId);
-    const deps = dependencies(organizationId);
-    deps.mandateManagement.issue = async () => ({
-      outcome: "REPLAYED" as const,
-      requestId: randomUUID(),
-      mandate: current,
-    });
+    const base = dependencies(organizationId);
+    const deps: AdminMandateManagementRouteDependencies = {
+      ...base,
+      mandateManagement: {
+        ...base.mandateManagement,
+        issue: async () => ({
+          outcome: "REPLAYED" as const,
+          requestId: randomUUID(),
+          mandate: current,
+        }),
+      },
+    };
     const app = await createApp({ proxy: proxyStub(), adminMandateManagement: deps });
     const response = await app.inject({
       method: "POST",
