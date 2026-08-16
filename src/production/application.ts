@@ -5,6 +5,7 @@ import { Pool } from "pg";
 import { createClient } from "redis";
 import { PrismaClient } from "../generated/prisma/client.js";
 import { createApp } from "../app.js";
+import { PostgresAdminAgentEnrollmentService } from "../modules/admin/admin-agent-enrollment.js";
 import {
   AdminAuditCheckpointRetentionWorker,
   PostgresAdminAuditCheckpointIssuer,
@@ -207,6 +208,12 @@ export async function createProductionApplication(
     const audit = new PostgresAuditLedger(sql, auditKeys);
     const auditVerifier = new PostgresAuditVerifier(sql, auditKeys);
     const adminAudit = new PostgresAdminChangeAuditLedger(sql, auditKeys);
+    const adminAgentEnrollment = new PostgresAdminAgentEnrollmentService(
+      sql,
+      adminAudit,
+      generateId,
+      clock,
+    );
     const adminAuditVerifier = new PostgresAdminChangeAuditVerifier(sql, auditKeys);
     const adminAuditCheckpointIssuer = new PostgresAdminAuditCheckpointIssuer(sql, auditKeys);
     const retainedAdminAuditVerifier = new PostgresRetainedAdminAuditVerifier(
@@ -278,6 +285,10 @@ export async function createProductionApplication(
             adminInventory: {
               ...adminAccess,
               inventory: adminInventory,
+            },
+            adminAgentEnrollment: {
+              ...adminAccess,
+              agentEnrollment: adminAgentEnrollment,
             },
           }
         : {}),
