@@ -1,6 +1,7 @@
 import Fastify from "fastify";
 import { describe, expect, it } from "vitest";
 import { registerAdminConsoleRoutes } from "../../src/api/admin-console.routes.js";
+import { createApp } from "../../src/app.js";
 import { ADMIN_CONSOLE_HTML } from "../../src/console/admin-console-page.js";
 import { ADMIN_CONSOLE_JS } from "../../src/console/admin-console-script.js";
 
@@ -32,6 +33,22 @@ describe("administrative web console", () => {
     expect(response.payload).not.toMatch(/<script(?![^>]*\bsrc=)[^>]*>/i);
 
     await app.close();
+  });
+
+  it("registers the console only when trusted administrative ingress is configured", async () => {
+    const withoutAdmin = await createApp({ proxy: {} as never });
+    const absent = await withoutAdmin.inject({ method: "GET", url: "/console" });
+    expect(absent.statusCode).toBe(404);
+    await withoutAdmin.close();
+
+    const withAdmin = await createApp({
+      proxy: {} as never,
+      adminAccess: {} as never,
+    });
+    const present = await withAdmin.inject({ method: "GET", url: "/console" });
+    expect(present.statusCode).toBe(200);
+    expect(present.headers["cache-control"]).toContain("no-store");
+    await withAdmin.close();
   });
 
   it("serves parseable JavaScript and CSS assets without creating a browser credential or HTML-injection path", async () => {
