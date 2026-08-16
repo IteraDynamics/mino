@@ -4,6 +4,7 @@ import type {
   AdminInventoryPage,
   AdminInventoryPageRequest,
   AdminInventoryRepository,
+  AdminMandateInventoryItem,
   AdminMerchantInventoryItem,
   AdminPolicyInventoryItem,
 } from "../../modules/admin/admin-inventory.js";
@@ -119,6 +120,49 @@ export class PrismaAdminInventoryRepository implements AdminInventoryRepository 
       active: row.active,
       createdAt: row.createdAt.toISOString(),
       updatedAt: row.updatedAt.toISOString(),
+    }));
+  }
+
+  public async listMandates(
+    input: AdminInventoryPageRequest,
+  ): Promise<AdminInventoryPage<AdminMandateInventoryItem>> {
+    const rows = await this.prisma.agentMandate.findMany({
+      where: {
+        organizationId: input.organizationId,
+        ...(input.cursor ? { id: { gt: input.cursor } } : {}),
+      },
+      orderBy: { id: "asc" },
+      take: input.limit + 1,
+      select: {
+        id: true,
+        userId: true,
+        agentId: true,
+        policyId: true,
+        policyVersion: true,
+        currency: true,
+        maxBudgetMinor: true,
+        rollingDailyLimitMinor: true,
+        status: true,
+        issuedAt: true,
+        expiresAt: true,
+        revokedAt: true,
+        signingKeyId: true,
+      },
+    });
+    return page(rows, input.limit, (row) => ({
+      id: row.id,
+      userId: row.userId,
+      agentId: row.agentId,
+      policyId: row.policyId,
+      policyVersion: row.policyVersion,
+      currency: row.currency,
+      maxBudgetMinor: row.maxBudgetMinor.toString(),
+      rollingDailyLimitMinor: row.rollingDailyLimitMinor.toString(),
+      status: row.status,
+      issuedAt: row.issuedAt.toISOString(),
+      expiresAt: row.expiresAt.toISOString(),
+      ...(row.revokedAt ? { revokedAt: row.revokedAt.toISOString() } : {}),
+      signingKeyId: row.signingKeyId,
     }));
   }
 }

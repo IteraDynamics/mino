@@ -1,8 +1,8 @@
 # Administrative inventory APIs
 
-Mino exposes a deliberately read-only administrative inventory surface on top of the authenticated administrative boundary.
+Mino exposes deliberately read-only administrative inventory routes on top of the authenticated administrative boundary. Mutation authority lives in separate, narrowly permissioned administrative services; inventory reads do not themselves grant or change authority.
 
-These routes are intended to support operator tooling and a future dashboard without introducing configuration mutation authority before administrative change auditing is available.
+These routes support operator tooling and the future web console while preserving organization-local query boundaries and safe projections.
 
 ## Routes and permissions
 
@@ -17,6 +17,9 @@ GET /v1/admin/organizations/:organizationId/policies
 
 GET /v1/admin/organizations/:organizationId/merchants
     requires merchant.read
+
+GET /v1/admin/organizations/:organizationId/mandates
+    requires mandate.read
 ```
 
 Authentication and authorization use the same shared boundary as the access-introspection endpoint:
@@ -94,21 +97,43 @@ Merchant rows expose:
 
 The internal upstream `baseUrl` is not returned by this list API, and merchant authorization credentials are never part of the repository result.
 
+## Mandate inventory
+
+Mandate rows expose the safe authority metadata needed to understand which durable grants exist:
+
+- mandate ID
+- user ID
+- agent ID
+- exact policy row ID and policy version
+- currency
+- max-budget and rolling-daily-limit minor-unit strings
+- status
+- issued/expiration timestamps
+- optional revocation timestamp
+- mandate signing-key ID
+
+The list deliberately omits:
+
+- raw mandate bearer tokens
+- raw token JTI values and JTI hashes
+- administrative issuance idempotency keys or their hashes
+- private signing material
+
+Full organization-scoped mandate detail is a separate `mandate.read` endpoint documented in `docs/admin-mandate-management.md`. It can expose additional safe snapshot fields/fingerprints but still never exposes the raw bearer artifact.
+
 ## Tenant boundary
 
 Every Prisma query includes the requested `organizationId` before rows are materialized. Mino does not query globally and filter the result in application memory.
 
-Tests seed resources belonging to a second organization and verify those records never appear in the target organization's pages.
+Integration coverage uses organization-local authorization and production repositories to verify cross-tenant access fails closed.
 
-## Deliberate non-claims
+## Relationship to write surfaces
 
-This slice adds no administrative writes. In particular it cannot:
+Inventory is observational. Administrative writes introduced in later governed slices use separate routes and exact permissions:
 
-- create/update/suspend agents
-- rotate agent keys
-- create/activate/deactivate policies
-- register/update merchants
-- issue/revoke mandates
-- manage memberships or roles
+- agent enrollment/lifecycle: `agent.create`, `agent.suspend`, `agent.reactivate`, `agent.rotate_key`
+- policy administration: `policy.create`, `policy.activate`, `policy.deactivate`
+- merchant administration: `merchant.manage`
+- mandate issuance/revocation: `mandate.issue`, `mandate.revoke`
 
-Those operations should be introduced only behind the same narrow permission model and a durable administrative-change audit trail.
+Those mutations remain subject to their own validation, transactional state changes, and signed administrative-audit receipts; possessing a read permission never implies the corresponding write permission.

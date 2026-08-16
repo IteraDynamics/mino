@@ -81,6 +81,25 @@ export async function registerAdminInventoryRoutes(
     }
     return reply.code(200).send(await dependencies.inventory.listMerchants(input));
   });
+
+  app.get("/v1/admin/organizations/:organizationId/mandates", async (request, reply) => {
+    const input = parseInventoryRequest(request.params, request.query);
+    if (!input) {
+      reply.header("cache-control", "no-store");
+      return reply.code(400).send({ error: "invalid_request" });
+    }
+    const authorization = await requireAdminPermission(
+      request,
+      reply,
+      dependencies,
+      input.organizationId,
+      "mandate.read",
+    );
+    if (!authorization) {
+      return;
+    }
+    return reply.code(200).send(await dependencies.inventory.listMandates(input));
+  });
 }
 
 function parseInventoryRequest(
