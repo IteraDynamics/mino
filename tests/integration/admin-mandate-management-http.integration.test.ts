@@ -158,7 +158,7 @@ integration("production administrative mandate issuance and revocation HTTP surf
         agentId,
         policyVersion: 4,
         currency: "USD",
-        maxBudgetMinor: 9007199254740993000n,
+        maxBudgetPerTransactionMinor: 9007199254740993000n,
         rollingDailyLimitMinor: 9223372036854775807n,
       });
       verifier.assertBoundToMandate(verified, resolved!);
