@@ -25,6 +25,8 @@ services:
       REDIS_URL_FILE: /run/secrets/redis_url
       MINO_ISSUER: ${MINO_ISSUER:?set MINO_ISSUER}
       MINO_MANDATE_PUBLIC_KEYS_B64_JSON: ${MINO_MANDATE_PUBLIC_KEYS_B64_JSON:?set mandate public keys}
+      MINO_MANDATE_SIGNING_KEY_ID: ${MINO_MANDATE_SIGNING_KEY_ID:?set mandate signing key id}
+      MINO_MANDATE_PRIVATE_KEY_FILE: /run/secrets/mandate_private_key
       MINO_DELEGATION_SIGNING_KEY_ID: ${MINO_DELEGATION_SIGNING_KEY_ID:?set delegation key id}
       MINO_DELEGATION_PRIVATE_KEY_FILE: /run/secrets/delegation_private_key
       MINO_AUDIT_SIGNING_KEY_ID: ${MINO_AUDIT_SIGNING_KEY_ID:?set audit key id}
@@ -40,6 +42,7 @@ services:
     secrets:
       - database_url
       - redis_url
+      - mandate_private_key
       - delegation_private_key
       - audit_private_key
       - approval_resolution_secret
@@ -147,6 +150,8 @@ secrets:
     file: ${MINO_DEPLOY_SECRETS_DIR:-./secrets}/postgres_password
   redis_password:
     file: ${MINO_DEPLOY_SECRETS_DIR:-./secrets}/redis_password
+  mandate_private_key:
+    file: ${MINO_DEPLOY_SECRETS_DIR:-./secrets}/mandate_private_key.pem
   delegation_private_key:
     file: ${MINO_DEPLOY_SECRETS_DIR:-./secrets}/delegation_private_key.pem
   audit_private_key:
