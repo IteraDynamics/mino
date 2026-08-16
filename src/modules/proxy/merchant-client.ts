@@ -1,4 +1,8 @@
 import { ACP_STABLE_VERSION } from "./acp-adapter.js";
+import {
+  normalizeMerchantRoutingTarget,
+  type NormalizedMerchantRoutingTarget,
+} from "./merchant-routing.js";
 
 export interface MerchantEndpoint {
   readonly id: string;
@@ -150,10 +154,10 @@ export class FetchACPMerchantClient implements ACPMerchantClient {
     if (headers.apiVersion !== ACP_STABLE_VERSION) {
       throw new Error("Refusing to send an unsupported ACP API version");
     }
-    assertRegisteredHttpsTarget(merchant);
+    const registered = assertRegisteredHttpsTarget(merchant);
 
-    const target = new URL(path, ensureTrailingSlash(merchant.baseUrl));
-    if (target.hostname.toLowerCase() !== merchant.domain.toLowerCase()) {
+    const target = new URL(path, ensureTrailingSlash(registered.baseUrl));
+    if (target.hostname.toLowerCase() !== registered.domain) {
       throw new Error("Resolved merchant target does not match registered domain");
     }
 
@@ -193,19 +197,13 @@ export class FetchACPMerchantClient implements ACPMerchantClient {
   }
 }
 
-export function assertRegisteredHttpsTarget(merchant: MerchantEndpoint): void {
+export function assertRegisteredHttpsTarget(
+  merchant: MerchantEndpoint,
+): NormalizedMerchantRoutingTarget {
   if (!merchant.active) {
     throw new Error("Merchant is inactive");
   }
-  const url = new URL(merchant.baseUrl);
-  if (url.protocol !== "https:") {
-    throw new Error("Merchant base URL must use HTTPS");
-  }
-  const hostname = url.hostname.toLowerCase();
-  const domain = merchant.domain.toLowerCase();
-  if (hostname !== domain) {
-    throw new Error("Merchant base URL hostname must exactly match registered domain");
-  }
+  return normalizeMerchantRoutingTarget(merchant.domain, merchant.baseUrl);
 }
 
 function ensureTrailingSlash(value: string): string {
