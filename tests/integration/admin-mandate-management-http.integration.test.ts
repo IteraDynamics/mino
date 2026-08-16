@@ -13,6 +13,7 @@ const REDIS_URL = process.env.REDIS_URL ?? "redis://127.0.0.1:6379";
 const issuer = "https://mandate-administration-login.example.test/";
 const audience = "mino-admin";
 const now = new Date("2026-08-16T16:30:00.000Z");
+const mandateSigningKeys = generateKeyPairSync("ed25519");
 
 integration("production administrative mandate issuance and revocation HTTP surface", () => {
   let pool: Pool;
@@ -25,7 +26,6 @@ integration("production administrative mandate issuance and revocation HTTP surf
   const policyId = randomUUID();
   const jwtKeys = generateKeyPairSync("rsa", { modulusLength: 2048 });
   const agentKeys = generateKeyPairSync("ed25519");
-  const mandateKeys = generateKeyPairSync("ed25519");
 
   beforeAll(async () => {
     pool = new Pool({ connectionString: DATABASE_URL });
@@ -306,10 +306,10 @@ function productionConfig(): ProductionConfig {
     host: "127.0.0.1",
     port: 3000,
     issuer: "https://mino.example",
-    mandateVerificationKeys: new Map([["mandate-http-k1", pemPublic(mandateKeys.publicKey)]]),
+    mandateVerificationKeys: new Map([["mandate-http-k1", pemPublic(mandateSigningKeys.publicKey)]]),
     mandateSigningKey: {
       keyId: "mandate-http-k1",
-      privateKey: pemPrivate(mandateKeys.privateKey),
+      privateKey: pemPrivate(mandateSigningKeys.privateKey),
     },
     delegationSigningKey: {
       keyId: "delegation-k1",
