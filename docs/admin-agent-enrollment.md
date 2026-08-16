@@ -4,7 +4,7 @@ Mino's first administrative mutation is agent enrollment. It establishes a crypt
 
 ## Authorization boundary
 
-`POST /v1/admin/organizations/:organizationId/agents` is registered only when the administrative JWT boundary is enabled. The caller must pass the same pinned-issuer JWT authentication used by the read-only admin surface and must hold `agent.create` in the exact organization named by the route.
+`POST /v1/admin/organizations/:organizationId/agents` is registered only when the administrative JWT boundary is enabled. The caller must pass the same pinned-issuer JWT authentication used by the administrative read surface and must hold `agent.create` in the exact organization named by the route.
 
 ## Enrollment contract
 
@@ -40,3 +40,7 @@ If the mutation or audit append fails, the caller rolls the transaction back. Th
 ## Spending non-authority
 
 Enrollment alone grants no commerce authority. An enrolled agent still cannot successfully exercise Mino's payment path without a separate valid server-side mandate/policy assignment and signed mandate token.
+
+## Verification
+
+The permanent gate exercises the production JWT -> organization RBAC -> HTTP enrollment -> PostgreSQL -> signed admin-audit path, plus exact replay, conflict, cross-tenant denial, and concurrent enrollment behavior. The admin audit verifier confirms the resulting chain remains valid, and the full pre-existing payment/recovery/audit/container suite must remain green before merge.
