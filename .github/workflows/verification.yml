@@ -90,7 +90,7 @@ jobs:
           docker image inspect mino:ci --format '{{json .Config.Healthcheck}}' | jq -e '.Test | length > 0'
           docker image inspect mino:ci --format '{{json .Config.Env}}' | jq -e 'all(.[]; contains("SECRET") | not)'
           docker run --rm --entrypoint sh mino:ci -ec 'test ! -e /app/node_modules/.bin/prisma && test ! -d /app/prisma'
-          docker run --rm --entrypoint sh mino:migration-ci -ec 'test -x /app/node_modules/.bin/prisma && test -f /app/prisma/migrations/20260815050000_baseline/migration.sql && test -f /app/prisma/migrations/20260815053000_admin_identity_rbac/migration.sql && test -f /app/prisma/migrations/20260815063000_admin_change_audit/migration.sql'
+          docker run --rm --entrypoint sh mino:migration-ci -ec 'test -x /app/node_modules/.bin/prisma && test -f /app/prisma/migrations/20260815050000_baseline/migration.sql && test -f /app/prisma/migrations/20260815053000_admin_identity_rbac/migration.sql && test -f /app/prisma/migrations/20260815063000_admin_change_audit/migration.sql && test -f /app/prisma/migrations/20260816154500_mandate_issuance_idempotency/migration.sql'
 
       - name: Run migration image with mounted datasource secret
         run: |
@@ -106,6 +106,7 @@ jobs:
         env:
           MINO_ISSUER: https://mino.example
           MINO_MANDATE_PUBLIC_KEYS_B64_JSON: '{"mino-k1":"placeholder"}'
+          MINO_MANDATE_SIGNING_KEY_ID: mino-k1
           MINO_DELEGATION_SIGNING_KEY_ID: delegation-k1
           MINO_AUDIT_SIGNING_KEY_ID: audit-k1
           MINO_AUDIT_PUBLIC_KEYS_B64_JSON: '{"audit-k1":"placeholder"}'
@@ -113,13 +114,15 @@ jobs:
           MINO_AUDIT_CHECKPOINT_RETENTION_URL: https://retention.example/checkpoints
         run: |
           secrets_dir="$(mktemp -d)"
-          for name in database_url redis_url postgres_password redis_password delegation_private_key.pem audit_private_key.pem approval_resolution_secret approval_webhook_secret merchant_credentials.json audit_checkpoint_retention_secret metrics_bearer_token; do
+          for name in database_url redis_url postgres_password redis_password mandate_private_key.pem delegation_private_key.pem audit_private_key.pem approval_resolution_secret approval_webhook_secret merchant_credentials.json audit_checkpoint_retention_secret metrics_bearer_token; do
             printf 'ci-placeholder' > "${secrets_dir}/${name}"
           done
           MINO_DEPLOY_SECRETS_DIR="${secrets_dir}" docker compose -f deploy/docker-compose.runtime.yml config --format json > /tmp/mino-compose.json
           jq -e '.services.mino.read_only == true' /tmp/mino-compose.json
           jq -e '.services.mino.cap_drop == ["ALL"]' /tmp/mino-compose.json
           jq -e '.services.mino.security_opt | index("no-new-privileges:true") != null' /tmp/mino-compose.json
+          jq -e '.services.mino.secrets | any(.source == "mandate_private_key")' /tmp/mino-compose.json
+          jq -e '.services.migrate.secrets | length == 1 and .[0].source == "database_url"' /tmp/mino-compose.json
           jq -e '.services.migrate.read_only == true' /tmp/mino-compose.json
           jq -e '.services.migrate.cap_drop == ["ALL"]' /tmp/mino-compose.json
           jq -e '.services.migrate.security_opt | index("no-new-privileges:true") != null' /tmp/mino-compose.json
