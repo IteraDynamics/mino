@@ -4,7 +4,10 @@ import {
   ADMIN_APPROVAL_STATUSES,
   ADMIN_PAYMENT_STATUSES,
   AdminTransactionApprovalValidationError,
+  type AdminApprovalFilter,
+  type AdminApprovalVoteRequest,
   type AdminApprovalVoteResult,
+  type AdminPaymentFilter,
   type PostgresAdminTransactionApprovalOperations,
 } from "../modules/admin/admin-transaction-approval-operations.js";
 import {
@@ -86,7 +89,10 @@ export async function registerAdminTransactionApprovalRoutes(
     }
     try {
       return reply.code(200).send(
-        await dependencies.operations.listApprovals(params.data.organizationId, query.data),
+        await dependencies.operations.listApprovals(
+          params.data.organizationId,
+          approvalFilter(query.data),
+        ),
       );
     } catch (error) {
       return sendValidationError(reply, error);
@@ -150,7 +156,7 @@ export async function registerAdminTransactionApprovalRoutes(
           await dependencies.operations.castApprovalVote(
             authorization,
             params.data.approvalRequestId,
-            body.data,
+            approvalVoteRequest(body.data),
           ),
         );
       } catch (error) {
@@ -178,7 +184,10 @@ export async function registerAdminTransactionApprovalRoutes(
     }
     try {
       return reply.code(200).send(
-        await dependencies.operations.listPayments(params.data.organizationId, query.data),
+        await dependencies.operations.listPayments(
+          params.data.organizationId,
+          paymentFilter(query.data),
+        ),
       );
     } catch (error) {
       return sendValidationError(reply, error);
@@ -216,6 +225,44 @@ export async function registerAdminTransactionApprovalRoutes(
       }
     },
   );
+}
+
+function approvalFilter(query: z.infer<typeof approvalQuerySchema>): AdminApprovalFilter {
+  return {
+    ...(query.limit !== undefined ? { limit: query.limit } : {}),
+    ...(query.cursor !== undefined ? { cursor: query.cursor } : {}),
+    ...(query.status !== undefined ? { status: query.status } : {}),
+    ...(query.userId !== undefined ? { userId: query.userId } : {}),
+    ...(query.agentId !== undefined ? { agentId: query.agentId } : {}),
+    ...(query.mandateId !== undefined ? { mandateId: query.mandateId } : {}),
+    ...(query.merchantId !== undefined ? { merchantId: query.merchantId } : {}),
+    ...(query.createdAfter !== undefined ? { createdAfter: query.createdAfter } : {}),
+    ...(query.createdBefore !== undefined ? { createdBefore: query.createdBefore } : {}),
+  };
+}
+
+function paymentFilter(query: z.infer<typeof paymentQuerySchema>): AdminPaymentFilter {
+  return {
+    ...(query.limit !== undefined ? { limit: query.limit } : {}),
+    ...(query.cursor !== undefined ? { cursor: query.cursor } : {}),
+    ...(query.status !== undefined ? { status: query.status } : {}),
+    ...(query.userId !== undefined ? { userId: query.userId } : {}),
+    ...(query.agentId !== undefined ? { agentId: query.agentId } : {}),
+    ...(query.mandateId !== undefined ? { mandateId: query.mandateId } : {}),
+    ...(query.merchantId !== undefined ? { merchantId: query.merchantId } : {}),
+    ...(query.checkoutSessionId !== undefined
+      ? { checkoutSessionId: query.checkoutSessionId }
+      : {}),
+    ...(query.createdAfter !== undefined ? { createdAfter: query.createdAfter } : {}),
+    ...(query.createdBefore !== undefined ? { createdBefore: query.createdBefore } : {}),
+  };
+}
+
+function approvalVoteRequest(body: z.infer<typeof voteBodySchema>): AdminApprovalVoteRequest {
+  return {
+    decision: body.decision,
+    ...(body.comment !== undefined ? { comment: body.comment } : {}),
+  };
 }
 
 function sendVoteResult(reply: FastifyReply, result: AdminApprovalVoteResult) {
