@@ -48,8 +48,25 @@ export interface AdminMerchantInventoryItem {
   readonly updatedAt: string;
 }
 
+export interface AdminMandateInventoryItem {
+  readonly id: string;
+  readonly userId: string;
+  readonly agentId: string;
+  readonly policyId: string;
+  readonly policyVersion: number;
+  readonly currency: string;
+  readonly maxBudgetMinor: string;
+  readonly rollingDailyLimitMinor: string;
+  readonly status: "ACTIVE" | "REVOKED" | "EXPIRED";
+  readonly issuedAt: string;
+  readonly expiresAt: string;
+  readonly revokedAt?: string;
+  readonly signingKeyId: string;
+}
+
 export interface AdminInventoryRepository {
   listAgents(input: AdminInventoryPageRequest): Promise<AdminInventoryPage<AdminAgentInventoryItem>>;
   listPolicies(input: AdminInventoryPageRequest): Promise<AdminInventoryPage<AdminPolicyInventoryItem>>;
   listMerchants(input: AdminInventoryPageRequest): Promise<AdminInventoryPage<AdminMerchantInventoryItem>>;
+  listMandates(input: AdminInventoryPageRequest): Promise<AdminInventoryPage<AdminMandateInventoryItem>>;
 }
