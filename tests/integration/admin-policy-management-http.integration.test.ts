@@ -18,6 +18,9 @@ integration("production administrative policy management HTTP surface", () => {
   const otherOrganizationId = randomUUID();
   const principalId = randomUUID();
   const membershipId = randomUUID();
+  const userId = randomUUID();
+  const agentId = randomUUID();
+  const mandateId = randomUUID();
   const jwtKeys = generateKeyPairSync("rsa", { modulusLength: 2048 });
 
   beforeAll(async () => {
@@ -45,13 +48,27 @@ integration("production administrative policy management HTTP surface", () => {
        values ($1, $2, 'FINANCE_MANAGER', now())`,
       [randomUUID(), membershipId],
     );
+    await pool.query(
+      `insert into "User" ("id", "organizationId", "email", "status", "createdAt", "updatedAt")
+       values ($1, $2, $3, 'ACTIVE', now(), now())`,
+      [userId, organizationId, `policy-user-${userId}@example.test`],
+    );
+    await pool.query(
+      `insert into "AgentIdentity"
+        ("id", "organizationId", "externalAgentId", "status", "createdAt", "updatedAt")
+       values ($1, $2, $3, 'ACTIVE', now(), now())`,
+      [agentId, organizationId, `policy-agent-${agentId}`],
+    );
   });
 
   afterAll(async () => {
     const organizationIds = [organizationId, otherOrganizationId];
     await pool.query(`delete from "AdminAuditLog" where "organizationId" = any($1::uuid[])`, [organizationIds]);
     await pool.query(`delete from "AdminAuditChainHead" where "organizationId" = any($1::uuid[])`, [organizationIds]);
+    await pool.query(`delete from "AgentMandate" where "organizationId" = any($1::uuid[])`, [organizationIds]);
     await pool.query(`delete from "Policy" where "organizationId" = any($1::uuid[])`, [organizationIds]);
+    await pool.query(`delete from "AgentIdentity" where "organizationId" = any($1::uuid[])`, [organizationIds]);
+    await pool.query(`delete from "User" where "organizationId" = any($1::uuid[])`, [organizationIds]);
     await pool.query(`delete from "Organization" where "id" = any($1::uuid[])`, [organizationIds]);
     await pool.query(`delete from "AdminPrincipal" where "id" = $1`, [principalId]);
     await pool.end();
@@ -131,6 +148,33 @@ integration("production administrative policy management HTTP surface", () => {
       expect(activatedV1.json()).toMatchObject({ outcome: "UPDATED", changed: true, policy: { active: true } });
       expect((await production.repositories.policies.getById(policyV1Id))?.active).toBe(true);
 
+      await pool.query(
+        `insert into "AgentMandate" (
+           "id", "organizationId", "userId", "agentId", "policyId",
+           "tokenJtiHash", "policyVersion", "currency", "maxBudgetMinor", "rollingDailyLimitMinor",
+           "approvedMerchantDomains", "approvedVendorIds", "restrictedCategories", "approvalMode",
+           "maxTransactionsPerMinute", "crossMerchantWindowSecs", "maxDistinctMerchants",
+           "delegationPayloadHash", "signingKeyId", "status", "issuedAt", "expiresAt"
+         ) values (
+           $1, $2, $3, $4, $5,
+           $6, 1, 'USD', 50000, 200000,
+           ARRAY['example.com']::text[], ARRAY['vendor-1']::text[], ARRAY['GAMBLING']::text[], 'DUAL_SIGNATURE_SLACK',
+           10, 60, 5,
+           'delegation-payload-hash', 'mino-k1', 'ACTIVE', $7, $8
+         )`,
+        [
+          mandateId,
+          organizationId,
+          userId,
+          agentId,
+          policyV1Id,
+          `policy-management-jti-${mandateId}`,
+          now,
+          new Date("2027-08-16T14:15:00.000Z"),
+        ],
+      );
+      expect(await production.repositories.mandates.getById(mandateId)).toBeDefined();
+
       const versionTwo = await production.app.inject({
         method: "POST",
         url: `${base}/${policyV1Id}/versions`,
@@ -186,6 +230,7 @@ integration("production administrative policy management HTTP surface", () => {
       ).toBe(200);
       expect((await production.repositories.policies.getById(policyV1Id))?.active).toBe(true);
       expect((await production.repositories.policies.getById(policyV2Id))?.active).toBe(true);
+      expect(await production.repositories.mandates.getById(mandateId)).toBeDefined();
 
       expect(
         (
@@ -198,6 +243,7 @@ integration("production administrative policy management HTTP surface", () => {
       ).toBe(200);
       expect((await production.repositories.policies.getById(policyV1Id))?.active).toBe(false);
       expect((await production.repositories.policies.getById(policyV2Id))?.active).toBe(true);
+      expect(await production.repositories.mandates.getById(mandateId)).toBeUndefined();
 
       const wrongTenant = await production.app.inject({
         method: "POST",
