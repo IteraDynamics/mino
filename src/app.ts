@@ -17,6 +17,10 @@ import {
   registerAdminInventoryRoutes,
   type AdminInventoryRouteDependencies,
 } from "./api/admin-inventory.routes.js";
+import {
+  registerAdminPolicyManagementRoutes,
+  type AdminPolicyManagementRouteDependencies,
+} from "./api/admin-policy-management.routes.js";
 import { registerApprovalRoutes } from "./api/approval.routes.js";
 import {
   registerMetricsRoute,
@@ -36,6 +40,7 @@ export interface CreateAppOptions {
   readonly adminInventory?: AdminInventoryRouteDependencies;
   readonly adminAgentEnrollment?: AdminAgentEnrollmentRouteDependencies;
   readonly adminAgentLifecycle?: AdminAgentLifecycleRouteDependencies;
+  readonly adminPolicyManagement?: AdminPolicyManagementRouteDependencies;
   readonly metrics?: MetricsRouteDependencies;
   readonly logger?: boolean;
   readonly now?: () => Date;
@@ -78,6 +83,9 @@ export async function createApp(options: CreateAppOptions): Promise<FastifyInsta
   }
   if (options.adminAgentLifecycle) {
     await registerAdminAgentLifecycleRoutes(app, options.adminAgentLifecycle);
+  }
+  if (options.adminPolicyManagement) {
+    await registerAdminPolicyManagementRoutes(app, options.adminPolicyManagement);
   }
 
   if (options.metrics) {
