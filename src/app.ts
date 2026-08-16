@@ -17,6 +17,7 @@ import {
   registerAdminAuditOperationsRoutes,
   type AdminAuditOperationsRouteDependencies,
 } from "./api/admin-audit-operations.routes.js";
+import { registerAdminConsoleRoutes } from "./api/admin-console.routes.js";
 import {
   registerAdminInventoryRoutes,
   type AdminInventoryRouteDependencies,
@@ -93,6 +94,7 @@ export async function createApp(options: CreateAppOptions): Promise<FastifyInsta
   }
 
   if (options.adminAccess) {
+    await registerAdminConsoleRoutes(app);
     await registerAdminAccessRoutes(app, options.adminAccess);
   }
   if (options.adminInventory) {
