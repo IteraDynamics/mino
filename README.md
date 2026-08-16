@@ -195,4 +195,6 @@ The GitHub verification gate additionally builds the runtime and migration conta
 
 ## Next implementation slice
 
-The next product slice is **audited administrative mandate issuance and revocation**. The admin plane can now govern machine identity, but it still cannot grant or remove economic authority through HTTP. The next slice should reuse the existing `mandate.issue` / `mandate.revoke` permissions, bind issuance to an active organization-local agent, user, and policy snapshot, preserve deterministic token/mandate semantics, and commit each mandate transition atomically with its signed administrative change receipt.
+The next product slice is **PR #24 — audited administrative policy management**. It should add organization-scoped policy detail, draft/version creation, safe activation/deactivation, and governed editing of the existing limits, merchant/vendor scope, restricted categories, approval mode, velocity, and cross-merchant controls. Policy mutations must reuse the authenticated organization-local admin boundary and atomically append signed administrative change receipts. Policy administration defines governance configuration but does **not** itself grant an agent spending authority; mandate issuance remains PR #26.
+
+The preserved roadmap through PR #30 is documented in `docs/ROADMAP.md`.
