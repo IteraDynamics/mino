@@ -196,6 +196,6 @@ async function cleanupOrganization(pool: Pool, organizationId: string): Promise<
   await pool.query(`delete from "Organization" where "id" = $1::uuid`, [organizationId]);
 }
 
-function pemPublic(key: Parameters<typeof pemPublic>[0] extends never ? never : import("node:crypto").KeyObject): string {
+function pemPublic(key: import("node:crypto").KeyObject): string {
   return key.export({ type: "spki", format: "pem" }).toString();
 }
