@@ -106,18 +106,15 @@ describe("AuthorizationGrantService", () => {
       () => "grant-1",
       { issuer: "https://mino.example" },
     );
+    const { approvedAmount: _approvedAmount, ...allowedWithoutApprovedAmount } = decision();
+    const blocked: PolicyDecision = {
+      ...allowedWithoutApprovedAmount,
+      verdict: DecisionVerdict.BLOCK,
+      eligibleForDelegationAssertion: false,
+    };
 
     expect(() =>
-      issuer.issue(
-        intent("ACP", { id: "cs_1" }),
-        {
-          ...decision(),
-          verdict: DecisionVerdict.BLOCK,
-          eligibleForDelegationAssertion: false,
-          approvedAmount: undefined,
-        } as PolicyDecision,
-        NOW,
-      ),
+      issuer.issue(intent("ACP", { id: "cs_1" }), blocked, NOW),
     ).toThrowError("Authorization grants can only be issued for allowed decisions");
   });
 });
