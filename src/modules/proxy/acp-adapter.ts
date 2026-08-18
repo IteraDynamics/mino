@@ -1,8 +1,8 @@
 import type {
-  CheckoutIntent,
-  CheckoutOperation,
-  MerchantIdentity,
-} from "../../domain/checkout/checkout.types.js";
+  EconomicIntent,
+  EconomicMerchantIdentity,
+  EconomicOperation,
+} from "../../domain/economic/economic-intent.types.js";
 
 export const ACP_STABLE_VERSION = "2026-04-17";
 
@@ -43,16 +43,20 @@ export interface ACPTotal {
 export interface NormalizeACPCheckoutInput {
   readonly session: unknown;
   readonly requestId: string;
-  readonly operation: CheckoutOperation;
+  readonly operation: EconomicOperation;
   readonly organizationId: string;
   readonly userId: string;
   readonly agentId: string;
-  readonly merchant: MerchantIdentity;
+  readonly merchant: EconomicMerchantIdentity;
   readonly idempotencyKey: string;
 }
 
+/**
+ * ACP is an edge adapter: it validates provider-specific merchant state and emits
+ * the provider-neutral EconomicIntent consumed by Mino's authorization core.
+ */
 export class ACPAdapter {
-  public normalizeCheckoutSession(input: NormalizeACPCheckoutInput): CheckoutIntent {
+  public normalizeCheckoutSession(input: NormalizeACPCheckoutInput): EconomicIntent {
     const session = parseCheckoutSession(input.session);
     const currency = session.currency.trim().toUpperCase();
     const total = requiredTotal(session.totals, "total");
