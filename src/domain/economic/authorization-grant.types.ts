@@ -1,4 +1,5 @@
-import type { EconomicCounterpartyIdentity, EconomicOperation } from "./counterparty-identity.js";
+import type { EconomicCounterpartyIdentity } from "./counterparty-identity.js";
+import type { EconomicOperation } from "./economic-intent.types.js";
 
 export interface AuthorizationGrantClaims {
   readonly iss: string;
