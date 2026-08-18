@@ -5,6 +5,7 @@ import {
   sha256Base64Url,
 } from "../../infrastructure/crypto/canonical-json.js";
 import type { CheckoutIntent } from "../../domain/checkout/checkout.types.js";
+import { resolveMerchantPolicyProjection } from "../../domain/economic/counterparty-identity.js";
 import type { PolicyDecision } from "../../domain/evaluation/evaluation.types.js";
 
 export interface DelegationSigningKey {
@@ -65,6 +66,11 @@ export class DelegationAssertionService implements DelegationAssertionIssuer {
       throw new Error("Delegation assertions can only be issued for allowed decisions");
     }
 
+    const merchant = resolveMerchantPolicyProjection(intent);
+    if (!merchant) {
+      throw new Error("ACP delegation assertions require an unambiguous merchant counterparty");
+    }
+
     const issuedAt = Math.floor(now.getTime() / 1000);
     const header: DelegationHeader = {
       alg: "EdDSA",
@@ -74,7 +80,7 @@ export class DelegationAssertionService implements DelegationAssertionIssuer {
     };
     const claims: DelegationAssertionClaims = {
       iss: this.options.issuer,
-      aud: intent.merchant.domain,
+      aud: merchant.domain,
       sub: intent.agentId,
       jti: this.generateId(),
       iat: issuedAt,
@@ -85,7 +91,7 @@ export class DelegationAssertionService implements DelegationAssertionIssuer {
       mandate_id: decision.mandateId,
       decision_id: decision.decisionId,
       request_id: intent.requestId,
-      merchant_domain: intent.merchant.domain,
+      merchant_domain: merchant.domain,
       amount_minor: decision.approvedAmount.minorUnits.toString(10),
       currency: decision.approvedAmount.currency,
       idempotency_digest: sha256Base64Url(intent.idempotencyKey),
