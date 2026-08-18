@@ -32,8 +32,8 @@ export interface EconomicMerchantIdentity {
 }
 
 export interface EconomicCounterpartyCarrier {
-  readonly counterparty?: EconomicCounterpartyIdentity;
-  readonly merchant?: EconomicMerchantIdentity;
+  readonly counterparty?: EconomicCounterpartyIdentity | undefined;
+  readonly merchant?: EconomicMerchantIdentity | undefined;
 }
 
 /** Build the canonical counterparty identity for the existing merchant model. */
