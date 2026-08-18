@@ -1,4 +1,4 @@
-import type { CheckoutIntent } from "../checkout/checkout.types.js";
+import type { EconomicIntent } from "../economic/economic-intent.types.js";
 import type { AgentSpendMandate, UUID } from "../mandates/mandate.types.js";
 import type { FxQuote, Money } from "../money.js";
 import type { DecisionReason } from "./decision-reasons.js";
@@ -18,7 +18,12 @@ export interface VelocityState {
 export interface EvaluationContext {
   readonly now: Date;
   readonly mandate: AgentSpendMandate;
-  readonly checkout: CheckoutIntent;
+  /**
+   * Provider-neutral economic authorization input. The property name remains
+   * `checkout` in PR #31 for compatibility with the existing transaction path;
+   * provider/protocol provenance must not alter policy meaning.
+   */
+  readonly checkout: EconomicIntent;
   readonly spend: SpendState;
   readonly velocity: VelocityState;
   readonly fxQuote?: FxQuote;
