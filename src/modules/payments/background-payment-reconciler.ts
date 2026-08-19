@@ -1,4 +1,12 @@
-import type { EconomicReconciliationAdapter } from "../execution/economic-reconciliation-adapter.js";
+import type {
+  EconomicProviderCredentialProvider,
+  EconomicReconciliationAdapter,
+} from "../execution/economic-reconciliation-adapter.js";
+import { ACPReconciliationAdapter } from "../proxy/acp-reconciliation-adapter.js";
+import type {
+  ACPMerchantClient,
+  MerchantRegistry,
+} from "../proxy/merchant-client.js";
 import type { AuthorizationReservations } from "../spending/authorization-reservation.service.js";
 import type {
   PaymentOutcomeRecord,
@@ -11,11 +19,29 @@ const DEFAULT_FORWARDING_GRACE_MS = 30_000;
 const DEFAULT_BASE_BACKOFF_MS = 5_000;
 const DEFAULT_MAX_BACKOFF_MS = 15 * 60 * 1000;
 
-export interface BackgroundPaymentReconcilerDependencies {
+export interface ProviderNeutralPaymentReconcilerDependencies {
   readonly outcomes: ReconciliationPaymentOutcomeStore;
   readonly reservations: AuthorizationReservations;
   readonly reconciliation: EconomicReconciliationAdapter;
 }
+
+/**
+ * Compatibility construction shape retained for existing ACP composition/tests.
+ * The provider-specific meaning is still delegated immediately into
+ * ACPReconciliationAdapter rather than interpreted by the reconciler itself.
+ */
+export interface ACPPaymentReconcilerCompatibilityDependencies {
+  readonly outcomes: ReconciliationPaymentOutcomeStore;
+  readonly reservations: AuthorizationReservations;
+  readonly merchants: MerchantRegistry;
+  readonly merchantClient: ACPMerchantClient;
+  readonly credentials: EconomicProviderCredentialProvider;
+  readonly generateRequestId: () => string;
+}
+
+export type BackgroundPaymentReconcilerDependencies =
+  | ProviderNeutralPaymentReconcilerDependencies
+  | ACPPaymentReconcilerCompatibilityDependencies;
 
 export interface BackgroundPaymentReconcilerOptions {
   readonly batchSize?: number;
@@ -36,6 +62,7 @@ export interface ReconciliationRunResult {
 type ReconciliationDisposition = "SUCCEEDED" | "FAILED_DEFINITIVE" | "DEFERRED";
 
 export class BackgroundPaymentReconciler {
+  private readonly deps: ProviderNeutralPaymentReconcilerDependencies;
   private readonly batchSize: number;
   private readonly leaseMs: number;
   private readonly forwardingGraceMs: number;
@@ -43,9 +70,23 @@ export class BackgroundPaymentReconciler {
   private readonly maxBackoffMs: number;
 
   public constructor(
-    private readonly deps: BackgroundPaymentReconcilerDependencies,
+    deps: BackgroundPaymentReconcilerDependencies,
     options: BackgroundPaymentReconcilerOptions = {},
   ) {
+    this.deps =
+      "reconciliation" in deps
+        ? deps
+        : {
+            outcomes: deps.outcomes,
+            reservations: deps.reservations,
+            reconciliation: new ACPReconciliationAdapter({
+              merchants: deps.merchants,
+              merchantClient: deps.merchantClient,
+              credentials: deps.credentials,
+              generateRequestId: deps.generateRequestId,
+            }),
+          };
+
     this.batchSize = options.batchSize ?? DEFAULT_BATCH_SIZE;
     this.leaseMs = options.leaseMs ?? DEFAULT_LEASE_MS;
     this.forwardingGraceMs = options.forwardingGraceMs ?? DEFAULT_FORWARDING_GRACE_MS;
