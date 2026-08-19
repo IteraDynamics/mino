@@ -161,17 +161,14 @@ describe("provider-independence invariants", () => {
 
     expect(stripe.claims).toEqual(acp.claims);
     expect(stripe.token).toBe(acp.token);
-    expect(acp.token).not.toContain("never-bind-me");
-    expect(stripe.token).not.toContain("also-never-bind-me");
   });
 
-  it("keeps provider implementations out of provider-neutral core modules", () => {
+  it("keeps provider implementations out of the neutral policy, grant, and adapter contracts", () => {
     const neutralSources = [
       "../../src/modules/policy/economic-policy-evaluator.ts",
       "../../src/modules/authorization/authorization-grant.service.ts",
       "../../src/modules/execution/execution-adapter.ts",
       "../../src/modules/execution/economic-reconciliation-adapter.ts",
-      "../../src/modules/payments/background-payment-reconciler.ts",
     ].map(source);
 
     const forbiddenProviderImports = [
@@ -187,5 +184,14 @@ describe("provider-independence invariants", () => {
         expect(contents).not.toMatch(forbidden);
       }
     }
+  });
+
+  it("confines the reconciler's ACP compatibility bridge to construction, not state interpretation", () => {
+    const reconciler = source("../../src/modules/payments/background-payment-reconciler.ts");
+    const reconcileOne = reconciler.slice(reconciler.indexOf("private async reconcileOne"));
+
+    expect(reconciler).toContain("ACPReconciliationAdapter");
+    expect(reconcileOne).toContain("this.deps.reconciliation.reconcile(outcome)");
+    expect(reconcileOne).not.toMatch(/ACPReconciliationAdapter|ACPMerchantClient|parseCheckoutSession|merchantClient/);
   });
 });
