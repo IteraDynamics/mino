@@ -27,7 +27,6 @@ interface PreparedACPExecution {
   readonly decision: PolicyDecision;
   readonly grant: SignedAuthorizationGrant;
   readonly delegationAssertion: string;
-  readonly preparedAt: Date;
 }
 
 /**
@@ -52,6 +51,7 @@ export class ACPExecutionAdapter
     private readonly client: ACPMerchantClient,
     private readonly grants: AuthorizationGrantIssuer,
     private readonly legacyDelegation: DelegationAssertionIssuer,
+    private readonly clock: () => Date = () => new Date(),
   ) {}
 
   public issue(intent: CheckoutIntent, decision: PolicyDecision, now: Date): string {
@@ -63,7 +63,6 @@ export class ACPExecutionAdapter
       decision,
       grant,
       delegationAssertion,
-      preparedAt: now,
     });
     return delegationAssertion;
   }
@@ -126,13 +125,13 @@ export class ACPExecutionAdapter
       throw new Error("ACP execution requires a prepared authorization grant");
     }
 
+    const now = this.clock();
     const prepared = this.prepared.get(delegationAssertion);
     if (!prepared) {
       throw new Error("ACP execution authorization is missing, expired, or already consumed");
     }
     this.prepared.delete(delegationAssertion);
 
-    const now = prepared.preparedAt;
     if (prepared.grant.claims.exp <= Math.floor(now.getTime() / 1000)) {
       throw new Error("ACP execution authorization grant is expired");
     }
