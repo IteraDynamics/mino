@@ -64,6 +64,7 @@ export function stripeEvidence(
   upstream: StripeProviderResponse,
   paymentIntent: NormalizedStripePaymentIntent,
 ): EconomicProviderEvidence {
+  const headers = upstream.headers ? safeHeaders(upstream.headers) : undefined;
   return {
     status: upstream.status,
     body: {
@@ -76,7 +77,7 @@ export function stripeEvidence(
         ? { cancellation_reason: paymentIntent.cancellationReason }
         : {}),
     },
-    ...(upstream.headers ? { headers: safeHeaders(upstream.headers) } : {}),
+    ...(headers ? { headers } : {}),
   };
 }
 
