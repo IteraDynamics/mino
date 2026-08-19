@@ -11,7 +11,9 @@ function proxyStub(): CheckoutProxyService {
   return {} as CheckoutProxyService;
 }
 
-function authorizationDependencies(organizationId: string) {
+function authorizationDependencies(
+  organizationId: string,
+): Pick<AdminTransactionApprovalRouteDependencies, "authenticator" | "authorizer"> {
   return {
     authenticator: {
       authenticateAuthorizationHeader: () => ({
@@ -21,7 +23,7 @@ function authorizationDependencies(organizationId: string) {
       }),
     },
     authorizer: {
-      authorize: async (request: { readonly permission: string }) => ({
+      authorize: async (request) => ({
         allowed: true as const,
         principalId: "11111111-1111-4111-8111-111111111111",
         membershipId: "22222222-2222-4222-8222-222222222222",
