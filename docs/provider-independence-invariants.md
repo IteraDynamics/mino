@@ -18,15 +18,17 @@ This does not mean unlike economic actions are equivalent. Changing amount, coun
 
 ### 2. AuthorizationGrant provenance independence
 
-A signed `AuthorizationGrant` binds normalized economic meaning, not provider provenance. For equivalent intents, provider-specific payloads and protocol names must not change the grant claims or `intent_digest`.
+A signed `AuthorizationGrant` binds normalized economic meaning, not provider provenance. For equivalent intents, provider-specific payloads and protocol names must not change the grant claims, signature input, or `intent_digest`.
 
 The grant remains Mino's portable authorization artifact. It is not itself a provider payment command.
 
 ### 3. Provider implementation isolation
 
-Provider-neutral policy, grant, execution-boundary, reconciliation-boundary, and reconciliation-state-machine modules must not import ACP implementation modules or ACP merchant-client contracts.
+The neutral policy evaluator, AuthorizationGrant issuer, execution-adapter contract, and reconciliation-adapter contract must not import ACP implementation modules or ACP merchant-client contracts.
 
 Provider implementation code belongs behind adapters.
+
+The current `BackgroundPaymentReconciler` intentionally retains a temporary ACP construction compatibility bridge so existing composition can still pass ACP merchant dependencies. That bridge must immediately instantiate `ACPReconciliationAdapter`; the reconciliation state-transition path itself must consume only `EconomicReconciliationAdapter` observations and must not parse ACP state directly.
 
 ### 4. Adapter-specific fail-closed behavior
 
@@ -51,8 +53,8 @@ Only normalized success may commit reserved spend. Only normalized definitive fa
 - provider-neutral reconciliation injection;
 - durable background reconciliation.
 
-The cross-layer suite is expected to fail if a future provider addition leaks provider implementation semantics into Mino's authorization core.
+The cross-layer suite is expected to fail if a future provider addition changes policy/grant semantics, leaks provider implementation imports into neutral contracts, or moves provider-specific state interpretation back into the reconciliation state machine.
 
 ## Scope
 
-This invariant suite does not claim that all current persistence or API presentation is provider-neutral. `PaymentOutcome` storage and portions of the current checkout-facing API remain compatibility-shaped around the first ACP integration. Those migrations are separate from the semantic invariants protected here.
+This invariant suite does not claim that all current persistence, construction, or API presentation is provider-neutral. `PaymentOutcome` storage, the reconciler's temporary ACP constructor compatibility shape, and portions of the current checkout-facing API remain compatibility-shaped around the first ACP integration. Those migrations are separate from the semantic invariants protected here.
