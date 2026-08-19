@@ -44,12 +44,14 @@ import {
   PostgresAuditLedger,
   PostgresAuditVerifier,
 } from "../modules/audit/postgres-audit-ledger.js";
+import { AuthorizationGrantService } from "../modules/authorization/authorization-grant.service.js";
 import { MandateTokenService } from "../modules/mandates/mandate-token.service.js";
 import { BackgroundPaymentReconciler } from "../modules/payments/background-payment-reconciler.js";
 import { PaymentReconciliationMonitor } from "../modules/payments/payment-reconciliation-monitor.js";
 import { PostgresPaymentOutcomeStore } from "../modules/payments/payment-outcome.store.js";
 import { PolicyEvaluator } from "../modules/policy/policy-evaluator.js";
 import { ACPAdapter } from "../modules/proxy/acp-adapter.js";
+import { ACPExecutionAdapter } from "../modules/proxy/acp-execution-adapter.js";
 import { CheckoutLifecycleProxyService } from "../modules/proxy/checkout-lifecycle-proxy.service.js";
 import { CheckoutProxyService } from "../modules/proxy/checkout-proxy.service.js";
 import { DelegationAssertionService } from "../modules/proxy/delegation-assertion.service.js";
@@ -273,7 +275,25 @@ export async function createProductionApplication(
           overrides.adminAuditCheckpointRetainer,
         )
       : undefined;
-    const merchantClient = overrides.merchantClient ?? new FetchACPMerchantClient();
+
+    const upstreamMerchantClient = overrides.merchantClient ?? new FetchACPMerchantClient();
+    const legacyDelegation = new DelegationAssertionService(
+      config.delegationSigningKey,
+      generateId,
+      { issuer: config.issuer },
+    );
+    const authorizationGrants = new AuthorizationGrantService(
+      config.delegationSigningKey,
+      randomUUID,
+      { issuer: config.issuer },
+    );
+    const merchantClient = new ACPExecutionAdapter(
+      upstreamMerchantClient,
+      authorizationGrants,
+      legacyDelegation,
+      clock,
+    );
+
     const proxy = new CheckoutProxyService({
       mandateTokens,
       mandates,
@@ -287,17 +307,13 @@ export async function createProductionApplication(
       }),
       reservations,
       paymentOutcomes,
-      delegationAssertions: new DelegationAssertionService(
-        config.delegationSigningKey,
-        generateId,
-        { issuer: config.issuer },
-      ),
+      delegationAssertions: merchantClient,
       approvals,
       audit,
       generateId,
     });
 
-    const lifecycleProxy = merchantClient.updateCheckout
+    const lifecycleProxy = upstreamMerchantClient.updateCheckout
       ? new CheckoutLifecycleProxyService({
           mandateTokens,
           mandates,
