@@ -11,6 +11,10 @@ import {
   type PostgresAdminTransactionApprovalOperations,
 } from "../modules/admin/admin-transaction-approval-operations.js";
 import {
+  presentAdminEconomicPage,
+  presentAdminEconomicRecord,
+} from "../modules/admin/provider-neutral-economic-presentation.js";
+import {
   requireAdminPermission,
   type AdminHttpAuthorizationDependencies,
 } from "./admin-http-authorization.js";
@@ -89,9 +93,11 @@ export async function registerAdminTransactionApprovalRoutes(
     }
     try {
       return reply.code(200).send(
-        await dependencies.operations.listApprovals(
-          params.data.organizationId,
-          approvalFilter(query.data),
+        presentAdminEconomicPage(
+          await dependencies.operations.listApprovals(
+            params.data.organizationId,
+            approvalFilter(query.data),
+          ),
         ),
       );
     } catch (error) {
@@ -123,7 +129,7 @@ export async function registerAdminTransactionApprovalRoutes(
           params.data.approvalRequestId,
         );
         return approval
-          ? reply.code(200).send({ approval })
+          ? reply.code(200).send({ approval: presentAdminEconomicRecord(approval) })
           : reply.code(404).send({ error: "not_found" });
       } catch (error) {
         return sendValidationError(reply, error);
@@ -184,9 +190,11 @@ export async function registerAdminTransactionApprovalRoutes(
     }
     try {
       return reply.code(200).send(
-        await dependencies.operations.listPayments(
-          params.data.organizationId,
-          paymentFilter(query.data),
+        presentAdminEconomicPage(
+          await dependencies.operations.listPayments(
+            params.data.organizationId,
+            paymentFilter(query.data),
+          ),
         ),
       );
     } catch (error) {
@@ -218,7 +226,7 @@ export async function registerAdminTransactionApprovalRoutes(
           params.data.paymentOutcomeId,
         );
         return payment
-          ? reply.code(200).send({ payment })
+          ? reply.code(200).send({ payment: presentAdminEconomicRecord(payment) })
           : reply.code(404).send({ error: "not_found" });
       } catch (error) {
         return sendValidationError(reply, error);
@@ -272,7 +280,7 @@ function sendVoteResult(reply: FastifyReply, result: AdminApprovalVoteResult) {
         outcome: result.outcome,
         changed: true,
         requestId: result.requestId,
-        approval: result.approval,
+        approval: presentAdminEconomicRecord(result.approval),
         auditReceipt: result.audit,
       });
     case "REPLAYED":
@@ -280,7 +288,7 @@ function sendVoteResult(reply: FastifyReply, result: AdminApprovalVoteResult) {
         outcome: result.outcome,
         changed: false,
         requestId: result.requestId,
-        approval: result.approval,
+        approval: presentAdminEconomicRecord(result.approval),
       });
     case "NOT_FOUND":
       return reply.code(404).send({ error: "not_found", requestId: result.requestId });
@@ -290,7 +298,7 @@ function sendVoteResult(reply: FastifyReply, result: AdminApprovalVoteResult) {
       return reply.code(409).send({
         error: "approval_already_resolved",
         requestId: result.requestId,
-        approval: result.approval,
+        approval: presentAdminEconomicRecord(result.approval),
       });
   }
 }
