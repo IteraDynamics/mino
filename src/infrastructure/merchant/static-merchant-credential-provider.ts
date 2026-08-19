@@ -1,13 +1,13 @@
-import type { MerchantCredentialProvider } from "../../modules/payments/background-payment-reconciler.js";
+import type { EconomicProviderCredentialProvider } from "../../modules/execution/economic-reconciliation-adapter.js";
 import { merchantCredentialKey } from "../config/production-config.js";
 
-export class StaticMerchantCredentialProvider implements MerchantCredentialProvider {
+export class StaticMerchantCredentialProvider implements EconomicProviderCredentialProvider {
   public constructor(private readonly credentials: ReadonlyMap<string, string>) {}
 
   public async getAuthorization(
     organizationId: string,
-    merchantId: string,
+    providerTargetId: string,
   ): Promise<string | undefined> {
-    return this.credentials.get(merchantCredentialKey(organizationId, merchantId));
+    return this.credentials.get(merchantCredentialKey(organizationId, providerTargetId));
   }
 }
