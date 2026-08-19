@@ -7,6 +7,9 @@ import {
   type AdminTransactionAuditFilter,
   type PostgresAdminAuditOperations,
 } from "../modules/admin/admin-audit-operations.js";
+import {
+  presentAdminEconomicPage,
+} from "../modules/admin/provider-neutral-economic-presentation.js";
 import { ADMIN_PERMISSIONS } from "../modules/admin/admin-authorizer.js";
 import type {
   AdminAuditChainCheckpoint,
@@ -106,9 +109,11 @@ export async function registerAdminAuditOperationsRoutes(
       }
       try {
         return reply.code(200).send(
-          await dependencies.operations.listTransactionAudit(
-            params.data.organizationId,
-            query.data as AdminTransactionAuditFilter,
+          presentAdminEconomicPage(
+            await dependencies.operations.listTransactionAudit(
+              params.data.organizationId,
+              query.data as AdminTransactionAuditFilter,
+            ),
           ),
         );
       } catch (error) {
