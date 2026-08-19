@@ -65,6 +65,7 @@ function harness() {
   let observedAssertion: string | undefined;
   let grantCalls = 0;
   let delegationCalls = 0;
+  let clockNow = NOW;
 
   const client: ACPMerchantClient = {
     async createCheckout() {
@@ -121,10 +122,14 @@ function harness() {
         return "legacy-acp-delegation";
       },
     },
+    () => clockNow,
   );
 
   return {
     adapter,
+    setClock(value: Date) {
+      clockNow = value;
+    },
     state: () => ({ completeCalls, observedAssertion, grantCalls, delegationCalls }),
   };
 }
@@ -174,6 +179,28 @@ describe("ACPExecutionAdapter", () => {
         },
       ),
     ).rejects.toThrow("missing, expired, or already consumed");
+
+    expect(h.state().completeCalls).toBe(0);
+  });
+
+  it("refuses a prepared grant that expires before provider forwarding", async () => {
+    const h = harness();
+    const providerArtifact = h.adapter.issue(intent(), decision(), NOW);
+    h.setClock(new Date(NOW.getTime() + 46_000));
+
+    await expect(
+      h.adapter.completeCheckout(
+        merchant,
+        "cs_34",
+        {},
+        {
+          requestId: "request-34",
+          apiVersion: "2026-04-17",
+          authorization: "Bearer merchant-token",
+          delegationAssertion: providerArtifact,
+        },
+      ),
+    ).rejects.toThrow("authorization grant is expired");
 
     expect(h.state().completeCalls).toBe(0);
   });
