@@ -291,6 +291,7 @@ export async function createProductionApplication(
       upstreamMerchantClient,
       authorizationGrants,
       legacyDelegation,
+      clock,
     );
 
     const proxy = new CheckoutProxyService({
