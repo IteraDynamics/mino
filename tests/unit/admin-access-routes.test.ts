@@ -2,6 +2,8 @@ import Fastify from "fastify";
 import { describe, expect, it } from "vitest";
 import { registerAdminAccessRoutes } from "../../src/api/admin-access.routes.js";
 import type {
+  AdminAccessPresentation,
+  AdminAccessPresentationLookup,
   AdminAuthorizationDecision,
   AdminAuthorizationRequest,
 } from "../../src/modules/admin/admin-authorizer.js";
@@ -22,17 +24,28 @@ class StubAuthenticator implements AdminBearerAuthenticator {
 
 class CapturingAuthorizer {
   public requests: AdminAuthorizationRequest[] = [];
+  public presentationRequests: AdminAccessPresentationLookup[] = [];
 
-  public constructor(private readonly decision: AdminAuthorizationDecision) {}
+  public constructor(
+    private readonly decision: AdminAuthorizationDecision,
+    private readonly presentation?: AdminAccessPresentation,
+  ) {}
 
   public async authorize(request: AdminAuthorizationRequest): Promise<AdminAuthorizationDecision> {
     this.requests.push(request);
     return this.decision;
   }
+
+  public async accessPresentation(
+    input: AdminAccessPresentationLookup,
+  ): Promise<AdminAccessPresentation | undefined> {
+    this.presentationRequests.push(input);
+    return this.presentation;
+  }
 }
 
 describe("admin access routes", () => {
-  it("returns 401 without a bearer credential and never reaches RBAC", async () => {
+  it("returns 401 without a bearer credential and never reaches RBAC or presentation lookup", async () => {
     const authorizer = new CapturingAuthorizer({
       allowed: false,
       permission: "organization.read",
@@ -57,6 +70,7 @@ describe("admin access routes", () => {
     expect(response.headers["www-authenticate"]).toBe('Bearer realm="mino-admin"');
     expect(response.headers["cache-control"]).toBe("no-store");
     expect(authorizer.requests).toHaveLength(0);
+    expect(authorizer.presentationRequests).toHaveLength(0);
     await app.close();
   });
 
@@ -93,21 +107,26 @@ describe("admin access routes", () => {
         permission: "organization.read",
       },
     ]);
+    expect(authorizer.presentationRequests).toHaveLength(0);
     await app.close();
   });
 
-  it("returns human-readable organization/admin metadata alongside stable IDs and effective permissions", async () => {
-    const authorizer = new CapturingAuthorizer({
-      allowed: true,
-      principalId: "principal-1",
-      principalDisplayName: "Alice Admin",
-      principalEmail: "alice@example.test",
-      membershipId: "membership-1",
-      organizationId,
-      organizationName: "Northstar Operations",
-      permission: "organization.read",
-      roles: ["FINANCE_MANAGER", "AUDITOR"],
-    });
+  it("returns human-readable organization/admin metadata only after authorization alongside stable IDs", async () => {
+    const authorizer = new CapturingAuthorizer(
+      {
+        allowed: true,
+        principalId: "principal-1",
+        membershipId: "membership-1",
+        organizationId,
+        permission: "organization.read",
+        roles: ["FINANCE_MANAGER", "AUDITOR"],
+      },
+      {
+        organizationName: "Northstar Operations",
+        principalDisplayName: "Alice Admin",
+        principalEmail: "alice@example.test",
+      },
+    );
     const app = Fastify();
     await registerAdminAccessRoutes(app, {
       authenticator: new StubAuthenticator({
@@ -142,6 +161,13 @@ describe("admin access routes", () => {
       },
       roles: ["FINANCE_MANAGER", "AUDITOR"],
     });
+    expect(authorizer.presentationRequests).toEqual([
+      {
+        principalId: "principal-1",
+        membershipId: "membership-1",
+        organizationId,
+      },
+    ]);
     expect(body.permissions).toContain("policy.activate");
     expect(body.permissions).toContain("audit.verify");
     expect(body.permissions).not.toContain("approval.vote");
@@ -209,6 +235,7 @@ describe("admin access routes", () => {
     expect(response.json()).toEqual({ error: "invalid_request" });
     expect(response.headers["cache-control"]).toBe("no-store");
     expect(authorizer.requests).toHaveLength(0);
+    expect(authorizer.presentationRequests).toHaveLength(0);
     await app.close();
   });
 });
