@@ -1,6 +1,12 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { z } from "zod";
 import {
+  AdminGovernancePermissionError,
+  AdminGovernanceValidationError,
+  type AdminGovernanceProposalResult,
+  type PostgresAdminHighRiskGovernanceService,
+} from "../modules/admin/admin-high-risk-governance.js";
+import {
   AdminMandateValidationError,
   type AdminMandateIssueResult,
   type AdminMandateRevokeResult,
@@ -37,6 +43,10 @@ export interface AdminMandateManagementRouteDependencies
     PostgresAdminMandateManagementService,
     "getMandate" | "issue" | "revoke"
   >;
+  readonly highRiskGovernance?: Pick<
+    PostgresAdminHighRiskGovernanceService,
+    "proposeMandateIssue"
+  >;
 }
 
 export async function registerAdminMandateManagementRoutes(
@@ -58,16 +68,12 @@ export async function registerAdminMandateManagementRoutes(
         params.data.organizationId,
         "mandate.read",
       );
-      if (!authorization) {
-        return;
-      }
+      if (!authorization) return;
       const mandate = await dependencies.mandateManagement.getMandate(
         params.data.organizationId,
         params.data.mandateId,
       );
-      if (!mandate) {
-        return reply.code(404).send({ error: "not_found" });
-      }
+      if (!mandate) return reply.code(404).send({ error: "not_found" });
       return reply.code(200).send({ mandate });
     },
   );
@@ -88,11 +94,21 @@ export async function registerAdminMandateManagementRoutes(
       params.data.organizationId,
       "mandate.issue",
     );
-    if (!authorization) {
-      return;
-    }
+    if (!authorization) return;
 
     try {
+      if (dependencies.highRiskGovernance) {
+        return sendGovernanceProposalResult(
+          reply,
+          await dependencies.highRiskGovernance.proposeMandateIssue(authorization, {
+            userId: body.data.userId,
+            agentId: body.data.agentId,
+            policyId: body.data.policyId,
+            expiresAt: body.data.expiresAt,
+            idempotencyKey: idempotency.data,
+          }),
+        );
+      }
       return sendIssueResult(
         reply,
         await dependencies.mandateManagement.issue(authorization, {
@@ -104,8 +120,14 @@ export async function registerAdminMandateManagementRoutes(
         }),
       );
     } catch (error) {
-      if (error instanceof AdminMandateValidationError) {
+      if (
+        error instanceof AdminMandateValidationError ||
+        error instanceof AdminGovernanceValidationError
+      ) {
         return reply.code(400).send({ error: "invalid_request" });
+      }
+      if (error instanceof AdminGovernancePermissionError) {
+        return reply.code(403).send({ error: "forbidden" });
       }
       throw error;
     }
@@ -126,15 +148,50 @@ export async function registerAdminMandateManagementRoutes(
         params.data.organizationId,
         "mandate.revoke",
       );
-      if (!authorization) {
-        return;
-      }
+      if (!authorization) return;
       return sendRevokeResult(
         reply,
         await dependencies.mandateManagement.revoke(authorization, params.data.mandateId),
       );
     },
   );
+}
+
+function sendGovernanceProposalResult(
+  reply: FastifyReply,
+  result: AdminGovernanceProposalResult,
+) {
+  switch (result.outcome) {
+    case "PENDING_GOVERNANCE":
+      return reply.code(202).send({
+        outcome: result.outcome,
+        changed: false,
+        requestId: result.requestId,
+        governanceRequest: result.governanceRequest,
+        auditReceipt: result.audit,
+      });
+    case "REPLAYED":
+      return reply.code(200).send({
+        outcome: result.outcome,
+        changed: false,
+        requestId: result.requestId,
+        governanceRequest: result.governanceRequest,
+      });
+    case "ALREADY_APPLIED":
+      return reply.code(200).send({
+        outcome: result.outcome,
+        changed: false,
+        requestId: result.requestId,
+        resourceType: result.resourceType,
+        resourceId: result.resourceId,
+      });
+    case "CONFLICT":
+      return reply.code(409).send({ error: "conflict", requestId: result.requestId });
+    case "NOT_FOUND":
+      return reply.code(404).send({ error: "not_found", requestId: result.requestId });
+    case "INVALID_TARGET":
+      return reply.code(409).send({ error: "invalid_target", requestId: result.requestId });
+  }
 }
 
 function sendIssueResult(reply: FastifyReply, result: AdminMandateIssueResult) {
