@@ -4,7 +4,7 @@ import { ADMIN_GOVERNANCE_CONSOLE_JS } from "../console/admin-governance-console
 import { ADMIN_CONSOLE_CSS } from "../console/admin-console-styles.js";
 import { ADMIN_CONSOLE_HTML } from "../console/admin-console-page.js";
 import { ADMIN_CONSOLE_JS } from "../console/admin-console-script.js";
-import { ADMIN_GUIDED_SETUP_CONSOLE_JS } from "../console/admin-guided-setup-console-script.js";
+import { ADMIN_GUIDED_SETUP_CONSOLE_JS } from "../console/admin-guided-setup-console-bundle.js";
 import { ADMIN_GUIDED_SETUP_CONSOLE_CSS } from "../console/admin-guided-setup-console-styles.js";
 import { ADMIN_PILOT_BASELINE_CONSOLE_JS } from "../console/admin-pilot-baseline-console-script.js";
 import { ADMIN_PILOT_BASELINE_CONSOLE_CSS } from "../console/admin-pilot-baseline-console-styles.js";
