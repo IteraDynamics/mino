@@ -38,6 +38,21 @@ export async function registerAdminAccessRoutes(
       principalId: authorization.principalId,
       membershipId: authorization.membershipId,
       organizationId: authorization.organizationId,
+      organization: {
+        id: authorization.organizationId,
+        ...(authorization.organizationName !== undefined
+          ? { name: authorization.organizationName }
+          : {}),
+      },
+      principal: {
+        id: authorization.principalId,
+        ...(authorization.principalDisplayName !== undefined
+          ? { displayName: authorization.principalDisplayName }
+          : {}),
+        ...(authorization.principalEmail !== undefined
+          ? { email: authorization.principalEmail }
+          : {}),
+      },
       roles: authorization.roles,
       permissions: permissionsForRoles(authorization.roles),
     });
