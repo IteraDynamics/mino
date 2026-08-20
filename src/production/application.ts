@@ -18,6 +18,7 @@ import {
   PostgresAdminChangeAuditLedger,
   PostgresAdminChangeAuditVerifier,
 } from "../modules/admin/admin-change-audit-ledger.js";
+import { PostgresAdminHighRiskGovernanceService } from "../modules/admin/admin-high-risk-governance.js";
 import { AdminAuthorizer } from "../modules/admin/admin-authorizer.js";
 import {
   AdminJwtAuthenticator,
@@ -251,6 +252,19 @@ export async function createProductionApplication(
           clock,
         )
       : undefined;
+    const adminHighRiskGovernance = new PostgresAdminHighRiskGovernanceService(
+      sql,
+      adminAudit,
+      config.mandateSigningKey
+        ? {
+            tokens: mandateTokens,
+            signingKey: config.mandateSigningKey,
+            issuer: config.issuer,
+          }
+        : undefined,
+      generateId,
+      clock,
+    );
     const adminTransactionApproval = new PostgresAdminTransactionApprovalOperations(
       sql,
       adminAudit,
@@ -355,6 +369,7 @@ export async function createProductionApplication(
             adminPolicyManagement: {
               ...adminAccess,
               policyManagement: adminPolicyManagement,
+              highRiskGovernance: adminHighRiskGovernance,
             },
             adminMerchantAdministration: {
               ...adminAccess,
@@ -365,9 +380,14 @@ export async function createProductionApplication(
                   adminMandateManagement: {
                     ...adminAccess,
                     mandateManagement: adminMandateManagement,
+                    highRiskGovernance: adminHighRiskGovernance,
                   },
                 }
               : {}),
+            adminHighRiskGovernance: {
+              ...adminAccess,
+              governance: adminHighRiskGovernance,
+            },
             adminTransactionApproval: {
               ...adminAccess,
               operations: adminTransactionApproval,
@@ -448,23 +468,17 @@ export async function createProductionApplication(
       },
       readiness,
       async close(): Promise<void> {
-        if (closed) {
-          return;
-        }
+        if (closed) return;
         closed = true;
         await app?.close();
-        if (redis.isOpen) {
-          await redis.quit();
-        }
+        if (redis.isOpen) await redis.quit();
         await prisma.$disconnect();
         await sqlPool.end();
       },
     };
   } catch (error) {
     await app?.close().catch(() => undefined);
-    if (redis.isOpen) {
-      await redis.quit().catch(() => undefined);
-    }
+    if (redis.isOpen) await redis.quit().catch(() => undefined);
     await prisma.$disconnect().catch(() => undefined);
     await sqlPool.end().catch(() => undefined);
     throw error;
