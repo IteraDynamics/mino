@@ -1144,7 +1144,7 @@ export class PostgresAdminHighRiskGovernanceService {
     requestId: string,
     timestamp: Date,
     reason: string,
-  ): Promise<Extract<AdminGovernanceApplyResult, { outcome: "STALE" }>> {
+  ): Promise<Extract<AdminGovernanceApplyResult, { outcome: "STALE" | "EXPIRED" }>> {
     await tx.query(
       `update "AdminGovernanceRequest"
           set "status" = 'STALE', "resolvedAt" = $3
