@@ -50,7 +50,7 @@ CREATE TABLE "AdminGovernanceVote" (
 );
 
 -- CreateIndex
-CREATE UNIQUE INDEX "AdminGovernanceRequest_organizationId_action_proposalKeyHa_key"
+CREATE UNIQUE INDEX "AdminGovernanceRequest_organizationId_action_proposalKeyHas_key"
 ON "AdminGovernanceRequest"("organizationId", "action", "proposalKeyHash");
 
 -- CreateIndex
