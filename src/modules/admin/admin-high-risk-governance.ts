@@ -1316,32 +1316,30 @@ async function loadMandateTarget(
   lockTargets: boolean,
 ): Promise<MandateTargetSnapshot> {
   const lock = lockTargets ? " for share" : " for share";
-  const [user, agent, policy, existing] = await Promise.all([
-    executor.query<UserTargetRow>(
-      `select "id", "status"::text as "status" from "User"
-        where "organizationId" = $1::uuid and "id" = $2::uuid${lock}`,
-      [organizationId, userId],
-    ),
-    executor.query<AgentTargetRow>(
-      `select "id", "status"::text as "status", "publicKey", "keyId" from "AgentIdentity"
-        where "organizationId" = $1::uuid and "id" = $2::uuid${lock}`,
-      [organizationId, agentId],
-    ),
-    executor.query<PolicyTargetRow>(
-      `select "id", "organizationId", "name", "version", "active", "baseCurrency",
-          "maxBudgetMinor"::text as "maxBudgetMinor", "rollingDailyLimitMinor"::text as "rollingDailyLimitMinor",
-          "approvedMerchantDomains", "approvedVendorIds", "restrictedCategories", "approvalMode"::text as "approvalMode",
-          "maxTransactionsPerMinute", "crossMerchantWindowSecs", "maxDistinctMerchants", "createdAt", "updatedAt"
-         from "Policy"
-        where "organizationId" = $1::uuid and "id" = $2::uuid${lock}`,
-      [organizationId, policyId],
-    ),
-    executor.query<MandateExistingRow>(
-      `select "id" from "AgentMandate"
-        where "organizationId" = $1::uuid and "issuanceKeyHash" = $2 limit 1`,
-      [organizationId, issuanceKeyHash],
-    ),
-  ]);
+  const user = await executor.query<UserTargetRow>(
+    `select "id", "status"::text as "status" from "User"
+      where "organizationId" = $1::uuid and "id" = $2::uuid${lock}`,
+    [organizationId, userId],
+  );
+  const agent = await executor.query<AgentTargetRow>(
+    `select "id", "status"::text as "status", "publicKey", "keyId" from "AgentIdentity"
+      where "organizationId" = $1::uuid and "id" = $2::uuid${lock}`,
+    [organizationId, agentId],
+  );
+  const policy = await executor.query<PolicyTargetRow>(
+    `select "id", "organizationId", "name", "version", "active", "baseCurrency",
+        "maxBudgetMinor"::text as "maxBudgetMinor", "rollingDailyLimitMinor"::text as "rollingDailyLimitMinor",
+        "approvedMerchantDomains", "approvedVendorIds", "restrictedCategories", "approvalMode"::text as "approvalMode",
+        "maxTransactionsPerMinute", "crossMerchantWindowSecs", "maxDistinctMerchants", "createdAt", "updatedAt"
+       from "Policy"
+      where "organizationId" = $1::uuid and "id" = $2::uuid${lock}`,
+    [organizationId, policyId],
+  );
+  const existing = await executor.query<MandateExistingRow>(
+    `select "id" from "AgentMandate"
+      where "organizationId" = $1::uuid and "issuanceKeyHash" = $2 limit 1`,
+    [organizationId, issuanceKeyHash],
+  );
   return {
     user: user.rows[0] ?? ({ id: "", status: "MISSING" } as UserTargetRow),
     agent: agent.rows[0] ?? ({ id: "", status: "MISSING", publicKey: null, keyId: null } as AgentTargetRow),
