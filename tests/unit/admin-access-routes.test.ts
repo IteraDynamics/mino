@@ -96,12 +96,15 @@ describe("admin access routes", () => {
     await app.close();
   });
 
-  it("returns the caller's organization-local roles and effective permissions after both gates allow", async () => {
+  it("returns human-readable organization/admin metadata alongside stable IDs and effective permissions", async () => {
     const authorizer = new CapturingAuthorizer({
       allowed: true,
       principalId: "principal-1",
+      principalDisplayName: "Alice Admin",
+      principalEmail: "alice@example.test",
       membershipId: "membership-1",
       organizationId,
+      organizationName: "Northstar Operations",
       permission: "organization.read",
       roles: ["FINANCE_MANAGER", "AUDITOR"],
     });
@@ -128,11 +131,55 @@ describe("admin access routes", () => {
       principalId: "principal-1",
       membershipId: "membership-1",
       organizationId,
+      organization: {
+        id: organizationId,
+        name: "Northstar Operations",
+      },
+      principal: {
+        id: "principal-1",
+        displayName: "Alice Admin",
+        email: "alice@example.test",
+      },
       roles: ["FINANCE_MANAGER", "AUDITOR"],
     });
     expect(body.permissions).toContain("policy.activate");
     expect(body.permissions).toContain("audit.verify");
     expect(body.permissions).not.toContain("approval.vote");
+    await app.close();
+  });
+
+  it("keeps presentation metadata optional for enrolled records that do not have it", async () => {
+    const authorizer = new CapturingAuthorizer({
+      allowed: true,
+      principalId: "principal-1",
+      membershipId: "membership-1",
+      organizationId,
+      permission: "organization.read",
+      roles: ["AUDITOR"],
+    });
+    const app = Fastify();
+    await registerAdminAccessRoutes(app, {
+      authenticator: new StubAuthenticator({
+        authenticated: true,
+        issuer: "https://login.example/",
+        subject: "alice",
+      }),
+      authorizer,
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url: `/v1/admin/organizations/${organizationId}/access`,
+      headers: { authorization: "Bearer signed-token" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      organization: { id: organizationId },
+      principal: { id: "principal-1" },
+    });
+    expect(response.body).not.toContain("displayName");
+    expect(response.body).not.toContain("email");
     await app.close();
   });
 
