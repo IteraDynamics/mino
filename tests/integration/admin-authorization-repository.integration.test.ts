@@ -20,7 +20,7 @@ integration("Prisma admin authorization repository", () => {
     await prisma.$disconnect();
   });
 
-  it("loads exact organization authority plus safe human-readable presentation metadata", async () => {
+  it("keeps exact authorization context separate from safe human-readable presentation metadata", async () => {
     const organizationId = randomUUID();
     const principalId = randomUUID();
     const issuer = `https://idp.example/${randomUUID()}`;
@@ -52,16 +52,25 @@ integration("Prisma admin authorization repository", () => {
         repository.findForIdentity({ issuer, subject, organizationId }),
       ).resolves.toEqual({
         principalId,
-        principalDisplayName: "Alice Admin",
-        principalEmail: "alice@example.test",
         principalStatus: "ACTIVE",
         membership: {
           membershipId: membership.id,
           organizationId,
-          organizationName: "RBAC test org",
           status: "ACTIVE",
           roles: ["FINANCE_MANAGER", "AUDITOR"],
         },
+      });
+
+      await expect(
+        repository.findAccessPresentation({
+          principalId,
+          membershipId: membership.id,
+          organizationId,
+        }),
+      ).resolves.toEqual({
+        organizationName: "RBAC test org",
+        principalDisplayName: "Alice Admin",
+        principalEmail: "alice@example.test",
       });
     } finally {
       await prisma.organization.deleteMany({ where: { id: organizationId } });
@@ -84,7 +93,7 @@ integration("Prisma admin authorization repository", () => {
         ],
       });
       await prisma.adminPrincipal.create({ data: { id: principalId, issuer, subject } });
-      await prisma.adminOrganizationMembership.create({
+      const membership = await prisma.adminOrganizationMembership.create({
         data: {
           organizationId,
           principalId,
@@ -99,6 +108,13 @@ integration("Prisma admin authorization repository", () => {
         principalId,
         principalStatus: "ACTIVE",
       });
+      await expect(
+        repository.findAccessPresentation({
+          principalId,
+          membershipId: membership.id,
+          organizationId: otherOrganizationId,
+        }),
+      ).resolves.toBeUndefined();
     } finally {
       await prisma.organization.deleteMany({
         where: { id: { in: [organizationId, otherOrganizationId] } },
@@ -136,7 +152,6 @@ integration("Prisma admin authorization repository", () => {
         membership: {
           membershipId: membership.id,
           organizationId,
-          organizationName: "Suspended org",
           status: "SUSPENDED",
           roles: ["ORGANIZATION_OWNER"],
         },
