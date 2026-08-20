@@ -32,7 +32,7 @@ class CapturingAuthorizer {
   }
 }
 
-function beneficiary(status = "ACTIVE") {
+function beneficiary(status: "ACTIVE" | "SUSPENDED" | "DISABLED" = "ACTIVE") {
   return {
     id: beneficiaryId,
     organizationId,
