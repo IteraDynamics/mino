@@ -248,10 +248,14 @@ integration("production administrative mandate issuance and revocation HTTP surf
       });
       expect(replay.statusCode).toBe(200);
       expect(replay.json()).toMatchObject({
-        outcome: "ALREADY_APPLIED",
+        outcome: "REPLAYED",
         changed: false,
-        resourceType: "mandate",
-        resourceId: mandateId,
+        governanceRequest: {
+          id: proposedBody.governanceRequest.id,
+          status: "APPLIED",
+          resultResourceType: "mandate",
+          resultResourceId: mandateId,
+        },
       });
       expect(replay.body).not.toContain("mandateToken");
 
