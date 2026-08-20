@@ -53,44 +53,47 @@ Every pilot-readiness PR should shorten or strengthen this path without weakenin
 
 ## PR #40 — Pilot-facing access baseline
 
-**Status: in progress.**
+**Status: implemented by GitHub PR #40.**
 
-Make the existing administrative product identify itself in human terms before adding new customer authority.
+The existing administrative product now identifies itself in human terms before adding new customer authority.
 
-Scope:
+Implemented scope:
 
-- expose enrolled organization name through `/access` while preserving the stable organization UUID;
-- expose enrolled administrator display name/email through `/access` while preserving principal and membership IDs;
-- treat those values as presentation-only metadata, never JWT-derived or authorization-bearing facts;
-- make the console display human organization/administrator identity before technical UUIDs;
-- keep technical identifiers available for audit/support;
-- normalize post-#39 console/documentation language so implemented four-eyes governance is not described as deferred;
-- document the concierge pilot boundary explicitly.
+- enrolled organization name is exposed through `/access` while preserving the stable organization UUID;
+- enrolled administrator display name/email is exposed through `/access` while preserving principal and membership IDs;
+- those values are loaded only after authorization as presentation metadata and never become JWT-derived authorization facts;
+- the console displays human organization/administrator identity before technical UUIDs;
+- technical identifiers remain available for audit/support;
+- post-#39 console/documentation language no longer describes implemented four-eyes governance as deferred;
+- the concierge pilot boundary is explicit.
 
-Non-goals:
+Non-goals preserved:
 
 - no new database authority;
 - no browser login/OIDC flow;
-- no user/beneficiary management yet;
 - no policy semantic changes;
 - no provider/runtime changes;
 - no self-service organization signup.
 
 ## PR #41 — Beneficiary administration
 
+**Status: in progress.**
+
 Remove the largest current setup hole: mandate issuance should not require out-of-band database provisioning and copy/paste of beneficiary UUIDs.
 
-Planned scope:
+Implemented candidate scope:
 
 - organization-scoped beneficiary inventory/detail;
-- create beneficiary using a narrow administrative permission;
-- safe lifecycle behavior needed for pilot operation;
-- human-readable selection during mandate proposal;
-- signed administrative audit for actual beneficiary mutations;
-- fail closed on organization mismatch and inactive beneficiary state;
-- preserve the distinction between a spending-beneficiary `User` and an `AdminPrincipal`.
+- `beneficiary.read`, `beneficiary.create`, and `beneficiary.suspend` as explicit administrative permissions;
+- normalized organization-local beneficiary creation using the existing `User` model;
+- equivalent active creation retries replay without duplicate administrative audit history;
+- beneficiary suspension and signed administrative audit commit atomically;
+- suspension immediately makes existing bound mandates fail closed because the production mandate resolver already requires an active beneficiary;
+- human-readable active-beneficiary selection during mandate proposal;
+- exact organization scoping and inactive/terminal conflict behavior;
+- preservation of the distinction between spending-beneficiary `User` and administrative `AdminPrincipal`.
 
-The exact lifecycle surface should remain minimal and be reconciled against current mandate semantics before implementation.
+The lifecycle surface is deliberately one-way in this pilot slice: suspension is supported, but reactivation is not. Reactivating a beneficiary could restore still-valid historical mandates, so Mino should not introduce that authority-restoring behavior as a convenience toggle without an explicit governance decision.
 
 ## PR #42 — Guided first-run setup and human money UX
 
