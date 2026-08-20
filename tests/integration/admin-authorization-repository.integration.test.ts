@@ -20,7 +20,7 @@ integration("Prisma admin authorization repository", () => {
     await prisma.$disconnect();
   });
 
-  it("loads the exact organization membership and deterministic role assignments for an external identity", async () => {
+  it("loads exact organization authority plus safe human-readable presentation metadata", async () => {
     const organizationId = randomUUID();
     const principalId = randomUUID();
     const issuer = `https://idp.example/${randomUUID()}`;
@@ -52,10 +52,13 @@ integration("Prisma admin authorization repository", () => {
         repository.findForIdentity({ issuer, subject, organizationId }),
       ).resolves.toEqual({
         principalId,
+        principalDisplayName: "Alice Admin",
+        principalEmail: "alice@example.test",
         principalStatus: "ACTIVE",
         membership: {
           membershipId: membership.id,
           organizationId,
+          organizationName: "RBAC test org",
           status: "ACTIVE",
           roles: ["FINANCE_MANAGER", "AUDITOR"],
         },
@@ -133,6 +136,7 @@ integration("Prisma admin authorization repository", () => {
         membership: {
           membershipId: membership.id,
           organizationId,
+          organizationName: "Suspended org",
           status: "SUSPENDED",
           roles: ["ORGANIZATION_OWNER"],
         },
