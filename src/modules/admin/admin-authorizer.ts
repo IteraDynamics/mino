@@ -130,12 +130,15 @@ const ROLE_PERMISSIONS = {
 export interface AdminMembershipAuthorizationContext {
   readonly membershipId: string;
   readonly organizationId: string;
+  readonly organizationName?: string;
   readonly status: AdminMembershipStatus;
   readonly roles: readonly AdminRole[];
 }
 
 export interface AdminIdentityAuthorizationContext {
   readonly principalId: string;
+  readonly principalDisplayName?: string;
+  readonly principalEmail?: string;
   readonly principalStatus: AdminPrincipalStatus;
   readonly membership?: AdminMembershipAuthorizationContext;
 }
@@ -162,8 +165,11 @@ export type AdminAuthorizationDecision =
   | {
       readonly allowed: true;
       readonly principalId: string;
+      readonly principalDisplayName?: string;
+      readonly principalEmail?: string;
       readonly membershipId: string;
       readonly organizationId: string;
+      readonly organizationName?: string;
       readonly permission: AdminPermission;
       readonly roles: readonly AdminRole[];
     }
@@ -204,8 +210,17 @@ export class AdminAuthorizer {
     return {
       allowed: true,
       principalId: context.principalId,
+      ...(context.principalDisplayName !== undefined
+        ? { principalDisplayName: context.principalDisplayName }
+        : {}),
+      ...(context.principalEmail !== undefined
+        ? { principalEmail: context.principalEmail }
+        : {}),
       membershipId: context.membership.membershipId,
       organizationId: context.membership.organizationId,
+      ...(context.membership.organizationName !== undefined
+        ? { organizationName: context.membership.organizationName }
+        : {}),
       permission: request.permission,
       roles: [...new Set(context.membership.roles)],
     };
