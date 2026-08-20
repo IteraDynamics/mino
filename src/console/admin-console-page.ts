@@ -69,8 +69,8 @@ export const ADMIN_CONSOLE_HTML = String.raw`<!doctype html>
 
       <div class="governance-banner" id="governance-banner">
         <div>
-          <strong>Direct RBAC mode</strong>
-          <span>High-risk four-eyes administrative governance is not implemented yet. Sensitive actions shown here are authorized directly by backend permissions and recorded in the signed administrative audit chain.</span>
+          <strong>Four-eyes governance active</strong>
+          <span>Mandate issuance and policy activation require a durable proposal, approval by a distinct authorized administrator, and explicit revalidated apply. Authority-removing and other administrative actions remain direct RBAC where designed.</span>
         </div>
       </div>
 
