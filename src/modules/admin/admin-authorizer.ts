@@ -4,6 +4,9 @@ export const ADMIN_PERMISSIONS = [
   "membership.read",
   "membership.manage",
   "role.assign",
+  "beneficiary.read",
+  "beneficiary.create",
+  "beneficiary.suspend",
   "agent.read",
   "agent.create",
   "agent.update",
@@ -45,6 +48,7 @@ export type AdminMembershipStatus = "ACTIVE" | "SUSPENDED" | "REMOVED";
 const READ_ONLY_PERMISSIONS = [
   "organization.read",
   "membership.read",
+  "beneficiary.read",
   "agent.read",
   "merchant.read",
   "policy.read",
@@ -61,6 +65,9 @@ const ROLE_PERMISSIONS = {
   SECURITY_ADMIN: [
     "organization.read",
     "membership.read",
+    "beneficiary.read",
+    "beneficiary.create",
+    "beneficiary.suspend",
     "agent.read",
     "agent.create",
     "agent.update",
@@ -85,6 +92,9 @@ const ROLE_PERMISSIONS = {
   FINANCE_MANAGER: [
     "organization.read",
     "membership.read",
+    "beneficiary.read",
+    "beneficiary.create",
+    "beneficiary.suspend",
     "agent.read",
     "merchant.read",
     "policy.read",
@@ -101,6 +111,7 @@ const ROLE_PERMISSIONS = {
   ],
   AGENT_MANAGER: [
     "organization.read",
+    "beneficiary.read",
     "agent.read",
     "agent.create",
     "agent.update",
@@ -116,6 +127,7 @@ const ROLE_PERMISSIONS = {
   ],
   APPROVER: [
     "organization.read",
+    "beneficiary.read",
     "agent.read",
     "policy.read",
     "mandate.read",
