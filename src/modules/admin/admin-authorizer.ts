@@ -146,8 +146,23 @@ export interface AdminIdentityLookup {
   readonly organizationId: string;
 }
 
+export interface AdminAccessPresentationLookup {
+  readonly principalId: string;
+  readonly membershipId: string;
+  readonly organizationId: string;
+}
+
+export interface AdminAccessPresentation {
+  readonly organizationName: string;
+  readonly principalDisplayName?: string;
+  readonly principalEmail?: string;
+}
+
 export interface AdminAuthorizationContextRepository {
   findForIdentity(input: AdminIdentityLookup): Promise<AdminIdentityAuthorizationContext | undefined>;
+  findAccessPresentation?(
+    input: AdminAccessPresentationLookup,
+  ): Promise<AdminAccessPresentation | undefined>;
 }
 
 export type AdminAuthorizationDenialReason =
@@ -209,6 +224,12 @@ export class AdminAuthorizer {
       permission: request.permission,
       roles: [...new Set(context.membership.roles)],
     };
+  }
+
+  public async accessPresentation(
+    input: AdminAccessPresentationLookup,
+  ): Promise<AdminAccessPresentation | undefined> {
+    return this.repository.findAccessPresentation?.(input);
   }
 }
 

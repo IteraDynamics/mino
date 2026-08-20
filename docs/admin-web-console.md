@@ -1,6 +1,6 @@
-# First administrative web console
+# Administrative web console
 
-Mino's first web console is a thin same-origin operator interface over the governed administrative APIs implemented before it. It is intentionally not a second control plane: authentication, organization-local authorization, validation, durable state transitions, signed administrative audit, transaction authorization, merchant-authoritative payment handling, approval semantics, and reconciliation remain backend responsibilities.
+Mino's administrative web console is a thin same-origin operator interface over the governed administrative APIs. It is intentionally not a second control plane: authentication, organization-local authorization, validation, durable state transitions, signed administrative audit, transaction authorization, payment reconciliation, and four-eyes governance remain backend responsibilities.
 
 ## Availability
 
@@ -13,28 +13,28 @@ GET /console/styles.css
 GET /console/app.js
 ```
 
-The console routes are registered only when the trusted administrative JWT boundary is configured. If administrative HTTP access is disabled, Mino does not expose the console shell either.
+Console routes are registered only when trusted administrative JWT ingress is configured. If administrative HTTP access is disabled, Mino does not expose the console shell either.
 
-No separate frontend service, deployment, CORS origin, JavaScript dependency graph, or frontend build pipeline is introduced by this first release.
+There is no separate frontend service, CORS origin, browser credential store, third-party JavaScript dependency, or independent frontend authorization model.
 
 ## Authentication model
 
-Mino currently verifies administrator JWTs issued by externally configured trusted issuers. It does not yet own an OAuth/OIDC browser login client or an administrative browser-session service.
+Mino verifies administrator JWTs issued by explicitly configured trusted issuers. It does not yet own an OAuth/OIDC browser-login client or an administrative browser-session service.
 
-PR #30 therefore does not create a parallel identity/session authority merely for UI convenience.
-
-The operator connects with:
+For the current design-partner/pilot flow, an operator connects with:
 
 - the target organization UUID; and
 - an existing signed administrator bearer JWT.
 
-The browser then calls:
+The browser calls:
 
 ```text
 GET /v1/admin/organizations/:organizationId/access
 ```
 
-using that bearer token. A successful response supplies the organization-local principal, membership, roles, and exact permission set used to render the console.
+using that token. A successful response supplies the organization-local principal, membership, roles, exact permissions, and safe presentation metadata used by the console.
+
+PR #40 makes that presentation human-first without changing authority. When enrolled metadata exists, the console shows the organization name and administrator display name/email before technical UUIDs. Stable principal, membership, and organization IDs remain available for support and audit work.
 
 The bearer JWT exists only in the page's in-memory JavaScript state. The console does **not** place it in:
 
@@ -50,8 +50,6 @@ The bearer JWT exists only in the page's in-memory JavaScript state. The console
 
 The token input is cleared after connection. Disconnect or page reload clears the in-memory token. API requests use `credentials: omit`, `cache: no-store`, same-origin paths, and `Referrer-Policy: no-referrer`.
 
-A production deployment can later add an explicit OIDC/OAuth browser flow as a separately governed authentication slice. That should reuse the existing pinned issuer/subject identity model rather than weakening it.
-
 ## Browser security boundary
 
 The console uses only first-party HTML, CSS, and JavaScript served by Mino. It loads no CDN scripts, external fonts, tracking pixels, analytics libraries, or remote images.
@@ -59,8 +57,8 @@ The console uses only first-party HTML, CSS, and JavaScript served by Mino. It l
 Every console asset is served with:
 
 - `Cache-Control: no-store, max-age=0`;
-- `Content-Security-Policy` with `default-src 'none'` and only same-origin script/style/connect authority;
-- `frame-ancestors 'none'` plus `X-Frame-Options: DENY`;
+- a restrictive Content Security Policy;
+- `frame-ancestors 'none'` and `X-Frame-Options: DENY`;
 - `Referrer-Policy: no-referrer`;
 - `X-Content-Type-Options: nosniff`;
 - same-origin opener/resource policy; and
@@ -72,7 +70,7 @@ Dynamic API values are written into DOM text nodes. The console does not turn se
 
 The console derives usability state from the exact permissions returned by `/access`.
 
-Navigation sections are hidden when their read permission is absent. Mutation controls are shown only when the corresponding narrow permission is present. This is a usability layer only; every API call still passes through backend JWT verification and organization-local authorization.
+Navigation sections are hidden when their read permission is absent. Mutation controls appear only when the corresponding narrow permission is present. This is a usability layer only; every request still passes through backend JWT verification and organization-local authorization.
 
 ### Overview
 
@@ -85,7 +83,14 @@ When `audit.read` is available, the landing view shows durable operational signa
 - overdue reservations; and
 - transaction/admin audit chain-head sequences.
 
-The view also shows the current principal, membership, roles, and permission count.
+The access section presents:
+
+- human-readable organization name when enrolled;
+- administrator display name and email when enrolled;
+- exact role and permission state; and
+- stable technical IDs as secondary support/audit details.
+
+JWT issuer/subject and identity-provider display claims are not presented as Mino profile authority.
 
 ### Agents
 
@@ -98,20 +103,26 @@ Additional controls are permission-specific:
 - `agent.reactivate` — reactivate a suspended agent;
 - `agent.rotate_key` — rotate Ed25519 verification material.
 
-The UI never treats enrollment or lifecycle management as spending authority.
+Agent enrollment/lifecycle management alone does not grant spending authority.
+
+Agent key rotation currently remains a direct RBAC-authorized security action. The bounded four-eyes workflow does not apply to every administrative mutation.
 
 ### Policies
 
 With `policy.read`, operators can inspect versioned policy configuration.
 
-The console exposes existing backend operations for:
+The console exposes backend operations for:
 
 - initial inactive policy creation (`policy.create`);
 - explicit next-version creation (`policy.create`);
-- version-local activation (`policy.activate`); and
-- version-local deactivation (`policy.deactivate`).
+- governed version-local activation (`policy.activate`); and
+- direct version-local deactivation (`policy.deactivate`).
 
-Monetary inputs remain decimal minor-unit strings and are sent to the existing backend validator. The browser does not reinterpret policy semantics or silently rewrite previous versions.
+Policy activation no longer mutates immediately. The console creates a durable high-risk governance proposal. A distinct currently authorized administrator must approve it, and an authorized administrator must explicitly apply it after Mino revalidates the exact target state and current authority.
+
+Policy deactivation deliberately remains direct RBAC so authority can be removed without waiting for a second administrator.
+
+Monetary policy inputs remain exact minor-unit strings in this baseline. Human currency entry is a later pilot-readiness slice; the browser does not reinterpret policy semantics or silently rewrite historical versions.
 
 ### Merchants
 
@@ -124,29 +135,57 @@ With `merchant.read`, operators can inspect registered merchant endpoints.
 - activation; and
 - deactivation.
 
-The console never receives merchant credentials. Configuration uses the existing canonical HTTPS/domain validation boundary. Active endpoints cannot be silently repointed from the browser because the backend continues to require inactive maintenance state.
+The console never receives merchant credentials. Configuration uses the existing canonical HTTPS/domain validation boundary. Merchant administration remains outside the bounded four-eyes actions selected for PR #39.
 
 ### Mandates
 
 With `mandate.read`, operators can inspect delegated authority.
 
-`mandate.issue` exposes issuance against a beneficiary user UUID, an active agent, an active exact policy version, and an explicit expiry. The form generates a cryptographically random administrative idempotency key once per open issuance attempt and reuses that key if a network failure leaves the outcome uncertain.
+`mandate.issue` now creates a **governance proposal**, not an active mandate. The proposal binds the intended beneficiary user, active keyed agent, exact active policy snapshot, expiry, organization, and idempotency semantics.
 
-On a successful new issuance, the raw signed mandate token is displayed in a dedicated one-time dialog. The token is not added to console state, inventory, logs, browser storage, or later detail views. Closing the dialog removes it from the DOM. Copying it to the operating-system clipboard is an explicit operator action.
+A distinct currently authorized administrator must approve the proposal. Approval alone still does not create authority. During explicit apply, Mino revalidates the proposer, distinct approver, applying administrator, current target state, and exact proposal binding.
 
-`mandate.revoke` uses the existing durable revocation path and therefore immediately removes authority from subsequent transaction-path resolution.
+Only after that apply succeeds does Mino mint the signed mandate token. The raw token is displayed once, is not persisted in governance/audit state, and is removed from the DOM when the one-time dialog closes.
 
-### Approvals
+`mandate.revoke` remains direct RBAC and immediately removes the mandate from subsequent transaction-path resolution even while an old bearer token remains cryptographically valid.
+
+The current pilot console still asks for a beneficiary user UUID because beneficiary administration has not yet been productized. That is the next planned pilot-readiness gap, not a permanent intended UX.
+
+### Governance
+
+With `governance.read`, operators can inspect the durable high-risk administrative queue.
+
+The implemented statuses are:
+
+- `PENDING`;
+- `APPROVED`;
+- `REJECTED`;
+- `EXPIRED`;
+- `APPLIED`; and
+- `STALE`.
+
+For the bounded actions (`policy.activate` and `mandate.issue`):
+
+- the proposer cannot approve their own request;
+- the approver must currently hold the request-bound underlying permission;
+- approval is bound to the exact proposal and precondition digest;
+- changed target or governing authority produces `STALE` rather than silently reusing old approval;
+- explicit apply revalidates current authority and state before mutation; and
+- the eventual mutation and signed governance/audit evidence commit atomically.
+
+This administrative governance domain remains separate from transaction-level human spend approvals.
+
+### Transaction approvals
 
 With `approval.read`, operators can inspect and filter durable human transaction approvals.
 
-`approval.vote` adds approve/reject actions using the same backend approval state machine and stable Mino administrative principal identity already established by PR #28. The console does not implement signature counting, terminal-state logic, expiry, or revalidation itself.
+`approval.vote` uses the existing transaction approval state machine and stable Mino administrative principal identity. The console does not implement voter counting, terminal-state logic, expiry, or transaction revalidation itself.
 
-An approval remains only approval state. The agent must retry the exact transaction through normal merchant-authoritative authorization before a payment can proceed.
+A transaction approval is not payment authorization. The agent must retry the exact transaction through normal merchant-authoritative authorization before payment can proceed.
 
 ### Payments
 
-With `payment.read`, operators can inspect and filter durable payment outcomes and reconciliation state.
+With `payment.read`, operators can inspect durable payment outcomes and reconciliation state.
 
 The console intentionally provides no payment mutation controls. There is no UI or API path for:
 
@@ -157,7 +196,7 @@ The console intentionally provides no payment mutation controls. There is no UI 
 - lease clearing; or
 - merchant-evidence substitution.
 
-Uncertain payments remain governed by the existing merchant-authoritative reconciliation machinery.
+Uncertain payments remain governed by the existing provider/merchant-authoritative reconciliation machinery.
 
 ### Audit and operations
 
@@ -168,21 +207,23 @@ With `audit.read`, operators can inspect:
 - durable recovery/worker signals; and
 - stored chain-head state.
 
-With `audit.verify`, the console can explicitly invoke the existing cryptographic database-chain verifiers and can accept a pasted independently retained signed checkpoint for retained-proof verification.
-
-The retained checkpoint is held only in the open dialog and sent to the existing verifier. Mino still does not gain a read credential into the independent retention trust domain.
+With `audit.verify`, the console can invoke the cryptographic database-chain verifiers and can accept a pasted independently retained signed checkpoint for retained-proof verification.
 
 Verification remains observational. The console cannot repair, rewrite, truncate, rewind, or replace either audit chain.
 
-## High-risk administrative governance remains deferred
+## Pilot boundary
 
-The roadmap originally placed a bounded four-eyes administrative governance layer before the console. That slice was deliberately deferred and remains unimplemented.
+The console is now suitable for a concierge design-partner pilot, not yet for anonymous/self-service signup.
 
-The first console therefore displays a persistent **Direct RBAC mode** notice and labels sensitive direct actions such as policy activation, merchant activation, agent key rotation, mandate issuance, and mandate revocation accordingly.
+The remaining onboarding friction is explicit:
 
-The UI does not claim that these operations are multi-human approved simply because they now have buttons.
+- organization/bootstrap provisioning is operator-assisted;
+- administrators still connect with an externally issued JWT and organization UUID;
+- beneficiary users are not yet manageable through the console;
+- policy monetary entry still uses exact minor units;
+- provider onboarding is not yet a generic customer self-service flow.
 
-When a durable four-eyes layer is implemented later, the console should consume those backend change-request/approval APIs rather than implementing proposer/approver logic in browser code.
+Those limitations are product/readiness work, not hidden authorization bypasses.
 
 ## Secret and authority non-claims
 
@@ -191,14 +232,14 @@ The console does not receive or expose:
 - Mino mandate-signing private keys;
 - payment-delegation private keys;
 - audit-signing private keys;
-- merchant credentials;
+- merchant/provider credentials;
 - retention HMAC secrets;
 - approval webhook secrets;
 - metrics credentials;
-- raw persisted request payloads hidden by the administrative safe projections; or
+- raw persisted request payloads hidden by administrative safe projections; or
 - any browser-only permission capable of overriding backend authorization.
 
-The console also adds no database migration, runtime secret, migration-container authority, or network dependency.
+The web application has no authority beyond the same backend APIs available to other administrative clients.
 
 ## Verification expectations
 
@@ -208,5 +249,6 @@ The permanent verification gate must continue to prove the complete backend suit
 - same-origin first-party asset serving;
 - absence of inline executable script in the HTML shell;
 - absence of browser credential persistence APIs;
-- use of the existing administrative endpoints rather than invented payment/audit mutation routes; and
-- explicit representation of the deferred four-eyes governance boundary.
+- human-readable access presentation without removing stable IDs;
+- use of the existing administrative/governance endpoints rather than invented payment/audit mutation routes; and
+- explicit representation of the implemented four-eyes boundary and the administrative actions that intentionally remain direct RBAC.

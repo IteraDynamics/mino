@@ -1,6 +1,9 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { permissionsForRoles } from "../modules/admin/admin-authorizer.js";
+import {
+  permissionsForRoles,
+  type AdminAuthorizer,
+} from "../modules/admin/admin-authorizer.js";
 import {
   requireAdminPermission,
   type AdminHttpAuthorizationDependencies,
@@ -10,7 +13,12 @@ const paramsSchema = z.object({
   organizationId: z.string().uuid(),
 });
 
-export type AdminAccessRouteDependencies = AdminHttpAuthorizationDependencies;
+export type AdminAccessRouteDependencies = Omit<
+  AdminHttpAuthorizationDependencies,
+  "authorizer"
+> & {
+  readonly authorizer: Pick<AdminAuthorizer, "authorize" | "accessPresentation">;
+};
 
 export async function registerAdminAccessRoutes(
   app: FastifyInstance,
@@ -34,10 +42,31 @@ export async function registerAdminAccessRoutes(
       return;
     }
 
+    const presentation = await dependencies.authorizer.accessPresentation({
+      principalId: authorization.principalId,
+      membershipId: authorization.membershipId,
+      organizationId: authorization.organizationId,
+    });
+
     return reply.code(200).send({
       principalId: authorization.principalId,
       membershipId: authorization.membershipId,
       organizationId: authorization.organizationId,
+      organization: {
+        id: authorization.organizationId,
+        ...(presentation?.organizationName !== undefined
+          ? { name: presentation.organizationName }
+          : {}),
+      },
+      principal: {
+        id: authorization.principalId,
+        ...(presentation?.principalDisplayName !== undefined
+          ? { displayName: presentation.principalDisplayName }
+          : {}),
+        ...(presentation?.principalEmail !== undefined
+          ? { email: presentation.principalEmail }
+          : {}),
+      },
       roles: authorization.roles,
       permissions: permissionsForRoles(authorization.roles),
     });

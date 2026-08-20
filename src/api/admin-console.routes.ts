@@ -3,6 +3,8 @@ import { ADMIN_GOVERNANCE_CONSOLE_JS } from "../console/admin-governance-console
 import { ADMIN_CONSOLE_CSS } from "../console/admin-console-styles.js";
 import { ADMIN_CONSOLE_HTML } from "../console/admin-console-page.js";
 import { ADMIN_CONSOLE_JS } from "../console/admin-console-script.js";
+import { ADMIN_PILOT_BASELINE_CONSOLE_JS } from "../console/admin-pilot-baseline-console-script.js";
+import { ADMIN_PILOT_BASELINE_CONSOLE_CSS } from "../console/admin-pilot-baseline-console-styles.js";
 
 const CONTENT_SECURITY_POLICY = [
   "default-src 'none'",
@@ -17,12 +19,23 @@ const CONTENT_SECURITY_POLICY = [
   "frame-ancestors 'none'",
 ].join("; ");
 
-const ADMIN_CONSOLE_BUNDLE = `${ADMIN_CONSOLE_JS}\n${ADMIN_GOVERNANCE_CONSOLE_JS}`;
+const NORMALIZED_ADMIN_CONSOLE_JS = ADMIN_CONSOLE_JS
+  .replaceAll(
+    "Four-eyes administrative governance is not implemented yet.",
+    "The bounded four-eyes workflow applies to mandate issuance and policy activation, not every administrative mutation.",
+  )
+  .replaceAll(
+    "Direct RBAC action; no four-eyes administrative governance is currently applied.",
+    "This action remains direct RBAC; the bounded four-eyes workflow applies only where explicitly shown.",
+  );
+
+export const ADMIN_CONSOLE_BUNDLE = `${NORMALIZED_ADMIN_CONSOLE_JS}\n${ADMIN_GOVERNANCE_CONSOLE_JS}\n${ADMIN_PILOT_BASELINE_CONSOLE_JS}`;
+export const ADMIN_CONSOLE_STYLE_BUNDLE = `${ADMIN_CONSOLE_CSS}\n${ADMIN_PILOT_BASELINE_CONSOLE_CSS}`;
 
 export async function registerAdminConsoleRoutes(app: FastifyInstance): Promise<void> {
   app.get("/console", async (_request, reply) => sendAsset(reply, "text/html; charset=utf-8", ADMIN_CONSOLE_HTML));
   app.get("/console/", async (_request, reply) => sendAsset(reply, "text/html; charset=utf-8", ADMIN_CONSOLE_HTML));
-  app.get("/console/styles.css", async (_request, reply) => sendAsset(reply, "text/css; charset=utf-8", ADMIN_CONSOLE_CSS));
+  app.get("/console/styles.css", async (_request, reply) => sendAsset(reply, "text/css; charset=utf-8", ADMIN_CONSOLE_STYLE_BUNDLE));
   app.get("/console/app.js", async (_request, reply) => sendAsset(reply, "text/javascript; charset=utf-8", ADMIN_CONSOLE_BUNDLE));
 }
 

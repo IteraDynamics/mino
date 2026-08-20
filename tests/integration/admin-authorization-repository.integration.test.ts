@@ -20,7 +20,7 @@ integration("Prisma admin authorization repository", () => {
     await prisma.$disconnect();
   });
 
-  it("loads the exact organization membership and deterministic role assignments for an external identity", async () => {
+  it("keeps exact authorization context separate from safe human-readable presentation metadata", async () => {
     const organizationId = randomUUID();
     const principalId = randomUUID();
     const issuer = `https://idp.example/${randomUUID()}`;
@@ -60,6 +60,18 @@ integration("Prisma admin authorization repository", () => {
           roles: ["FINANCE_MANAGER", "AUDITOR"],
         },
       });
+
+      await expect(
+        repository.findAccessPresentation({
+          principalId,
+          membershipId: membership.id,
+          organizationId,
+        }),
+      ).resolves.toEqual({
+        organizationName: "RBAC test org",
+        principalDisplayName: "Alice Admin",
+        principalEmail: "alice@example.test",
+      });
     } finally {
       await prisma.organization.deleteMany({ where: { id: organizationId } });
       await prisma.adminPrincipal.deleteMany({ where: { id: principalId } });
@@ -81,7 +93,7 @@ integration("Prisma admin authorization repository", () => {
         ],
       });
       await prisma.adminPrincipal.create({ data: { id: principalId, issuer, subject } });
-      await prisma.adminOrganizationMembership.create({
+      const membership = await prisma.adminOrganizationMembership.create({
         data: {
           organizationId,
           principalId,
@@ -96,6 +108,13 @@ integration("Prisma admin authorization repository", () => {
         principalId,
         principalStatus: "ACTIVE",
       });
+      await expect(
+        repository.findAccessPresentation({
+          principalId,
+          membershipId: membership.id,
+          organizationId: otherOrganizationId,
+        }),
+      ).resolves.toBeUndefined();
     } finally {
       await prisma.organization.deleteMany({
         where: { id: { in: [organizationId, otherOrganizationId] } },

@@ -29,8 +29,8 @@ integration("production admin HTTP authentication boundary", () => {
     );
     await pool.query(
       `insert into "AdminPrincipal"
-        ("id", "issuer", "subject", "email", "status", "createdAt", "updatedAt")
-       values ($1, $2, 'alice-subject', 'alice@example.test', 'ACTIVE', now(), now())`,
+        ("id", "issuer", "subject", "email", "displayName", "status", "createdAt", "updatedAt")
+       values ($1, $2, 'alice-subject', 'alice@example.test', 'Alice Admin', 'ACTIVE', now(), now())`,
       [principalId, issuer],
     );
     await pool.query(
@@ -72,7 +72,7 @@ integration("production admin HTTP authentication boundary", () => {
     }
   });
 
-  it("authenticates the JWT, applies exact organization RBAC, and exposes only the enrolled access context", async () => {
+  it("authenticates the JWT, applies exact organization RBAC, and exposes the enrolled human-readable access profile", async () => {
     const publicPem = jwtKeys.publicKey.export({ type: "spki", format: "pem" }).toString();
     const production = await createProductionApplication(productionConfig(), {
       logger: false,
@@ -97,11 +97,22 @@ integration("production admin HTTP authentication boundary", () => {
         principalId,
         membershipId,
         organizationId,
+        organization: {
+          id: organizationId,
+          name: "Admin HTTP org",
+        },
+        principal: {
+          id: principalId,
+          displayName: "Alice Admin",
+          email: "alice@example.test",
+        },
         roles: ["FINANCE_MANAGER"],
       });
       expect(allowed.json().permissions).toContain("policy.activate");
-      expect(allowed.body).not.toContain("alice@example.test");
+      expect(allowed.body).toContain("alice@example.test");
+      expect(allowed.body).toContain("Alice Admin");
       expect(allowed.body).not.toContain("alice-subject");
+      expect(allowed.body).not.toContain(issuer);
 
       const wrongAudience = await production.app.inject({
         method: "GET",

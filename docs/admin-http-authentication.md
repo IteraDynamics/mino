@@ -1,30 +1,32 @@
 # Administrative HTTP authentication
 
-Mino's administrative HTTP boundary is intentionally separate from both agent authentication and the durable administrative RBAC model.
+Mino's administrative HTTP boundary is intentionally separate from both agent authentication and delegated spending authority.
 
 ## Trust chain
 
-A request to an administrative route must pass two independent gates:
+Every administrative request passes two independent gates:
 
 ```text
 Bearer JWT
    ↓ cryptographic verification
-trusted issuer + key + algorithm + audience + subject + time claims
+trusted issuer + pinned key + algorithm + audience + subject + time claims
    ↓ stable (issuer, subject)
 AdminPrincipal / organization membership
-   ↓ deterministic RBAC
+   ↓ deterministic organization-local RBAC
 required narrow permission
    ↓
 route handler
 ```
 
-A valid identity-provider JWT is **not** sufficient by itself to administer Mino. The verified `(issuer, subject)` must also be enrolled as an active `AdminPrincipal`, have an active membership in the exact target organization, and receive the route's required permission through the built-in role catalog.
+A valid identity-provider JWT is **not** sufficient by itself to administer Mino. The verified `(issuer, subject)` must resolve to an active `AdminPrincipal`, an active membership in the exact target organization, and a role set that grants the route's narrow permission.
+
+Email, display name, and organization name are presentation metadata only. They do not participate in authorization decisions and are never accepted from JWT claims as Mino authority.
 
 ## Trusted issuer configuration
 
-Administrative routes are not registered unless `MINO_ADMIN_JWT_ISSUERS_JSON` contains at least one trusted issuer. An empty or absent value disables the administrative HTTP surface.
+Administrative routes are not registered unless `MINO_ADMIN_JWT_ISSUERS_JSON` contains at least one trusted issuer. An empty or absent value disables the administrative HTTP surface and the administrative web console.
 
-The configuration is server-controlled public verification material, not a bearer secret. It has this shape:
+The configuration contains server-controlled public verification material, not bearer secrets. It has this shape:
 
 ```json
 {
@@ -37,7 +39,7 @@ The configuration is server-controlled public verification material, not a beare
 }
 ```
 
-Issuer identifiers must be HTTPS URLs without embedded credentials, query strings, or fragments. Mino does not rewrite the configured issuer identifier: the JWT `iss` claim must exactly match that trusted string, including any intentional path or trailing-slash choice made by the identity provider.
+Issuer identifiers must be HTTPS URLs without embedded credentials, query strings, or fragments. Mino does not rewrite the configured issuer identifier: the JWT `iss` claim must exactly match the trusted string.
 
 Supported key/algorithm bindings are deliberately narrow:
 
@@ -45,52 +47,76 @@ Supported key/algorithm bindings are deliberately narrow:
 - P-256 EC public key → `ES256`
 - Ed25519 public key → `EdDSA`
 
-The JWT `kid` must select a pinned key for that issuer, and the token's `alg` must exactly match the algorithm implied by that key type. `none`, HMAC algorithms, RSA-PSS algorithms, other EC curves, and algorithm/key confusion are rejected.
+The JWT `kid` must select a pinned key for that issuer, and `alg` must exactly match the algorithm implied by that key type. `none`, HMAC algorithms, RSA-PSS algorithms, other EC curves, and algorithm/key confusion are rejected.
 
 ## Claims and time validation
 
 Mino requires:
 
 - `iss` — exact trusted issuer
-- `aud` — either the exact configured audience or an array containing it
+- `aud` — exact configured audience, or an array containing it
 - `sub` — non-empty stable external subject
 - `exp` — required NumericDate
 - `kid` and `alg` in the JOSE header
 
-`nbf` and `iat` are optional, but are validated when present. The production verifier allows a 60-second clock-skew window by default. Tokens that are expired, not yet valid, or materially issued in the future fail authentication.
+`nbf` and `iat` are optional but validated when present. The production verifier allows a bounded clock-skew window. Tokens that are expired, not yet valid, or materially issued in the future fail authentication.
 
-Mino returns only the stable issuer/subject pair from JWT authentication. It does not persist the raw bearer token or treat email/display-name claims as authority.
+The authenticator returns only the stable issuer/subject identity. Mino does not persist the raw bearer token and does not trust email/display-name JWT claims as enrolled metadata.
 
-## HTTP semantics
+## Access context
 
-The first authenticated administrative route is:
+The administrative console establishes organization-local context with:
 
 ```text
 GET /v1/admin/organizations/:organizationId/access
 ```
 
-It requires `organization.read` and returns only the caller's enrolled organization-local principal ID, membership ID, roles, and effective Mino permissions.
+The route requires `organization.read`. After authentication and RBAC succeed, it returns the stable technical identifiers and exact effective roles/permissions plus safe human-readable metadata from Mino's enrolled records:
 
-Authentication and authorization failures are intentionally coarse:
+```json
+{
+  "principalId": "<uuid>",
+  "membershipId": "<uuid>",
+  "organizationId": "<uuid>",
+  "organization": {
+    "id": "<uuid>",
+    "name": "Northstar Operations"
+  },
+  "principal": {
+    "id": "<uuid>",
+    "displayName": "Alice Admin",
+    "email": "alice@example.com"
+  },
+  "roles": ["FINANCE_MANAGER"],
+  "permissions": ["organization.read", "policy.read", "policy.activate"]
+}
+```
+
+`organization.name`, `principal.displayName`, and `principal.email` are presentation-only and may be omitted when the corresponding enrolled metadata is absent. Stable IDs remain present for support, audit, and API interoperability. The response never returns the external JWT subject, issuer configuration, bearer token, private keys, or signing material.
+
+Authentication and authorization failures remain intentionally coarse:
 
 - malformed/missing/invalid bearer token → `401 {"error":"unauthorized"}` with a Bearer challenge
-- valid bearer identity without required Mino tenant permission → `403 {"error":"forbidden"}`
+- valid bearer identity without required organization-local Mino permission → `403 {"error":"forbidden"}`
 
 Internal RBAC denial reasons such as missing membership, suspended principal, or missing permission are not reflected back to callers.
 
+## Current administrative boundary
+
+The same JWT/RBAC boundary protects the implemented administrative surfaces for agent lifecycle, policy management, merchant administration, mandate management, high-risk administrative governance, transaction approvals, payment visibility, audit verification, and operational visibility.
+
+High-risk authority-creating/enabling actions are not authenticated through a separate identity path. `mandate.issue` and `policy.activate` reuse this boundary and then enter the durable four-eyes governance layer implemented by PR #39. The proposer, distinct approver, and applying administrator are revalidated against current Mino authority before the approved mutation can commit.
+
 ## Deliberate non-claims
 
-This slice does **not** implement:
+Mino still does **not** implement:
 
-- browser login/session management
-- OIDC authorization-code or PKCE flows
-- live OIDC discovery
-- remote JWKS retrieval or automatic key refresh
-- SCIM provisioning
-- generic customer-authored ABAC
-- administrative mutation endpoints
-- replay-resistant sender-constrained access tokens such as DPoP/mTLS
+- a first-party browser login/session service;
+- OIDC authorization-code or PKCE browser flows;
+- live OIDC discovery;
+- remote JWKS retrieval or automatic key refresh;
+- SCIM provisioning;
+- generic customer-authored ABAC;
+- replay-resistant sender-constrained administrator access tokens such as DPoP/mTLS.
 
-Pinned keys can be rotated operationally by supplying the old and new public keys simultaneously during the issuer's overlap window, then removing the retired key after its accepted tokens have expired.
-
-The read-only access endpoint is deliberately the first HTTP consumer of the #17 authorization substrate. Mutation APIs should be added only after this authentication boundary remains green under production composition and integration testing.
+For the first design-partner pilots, organization/bootstrap provisioning and administrator-token issuance remain concierge operational steps. A later browser-login slice should reuse the same pinned issuer/subject and organization-local RBAC model rather than creating a parallel authority system.

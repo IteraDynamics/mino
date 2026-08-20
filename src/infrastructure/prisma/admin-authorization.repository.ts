@@ -1,5 +1,7 @@
 import type { PrismaClient } from "../../generated/prisma/client.js";
 import type {
+  AdminAccessPresentation,
+  AdminAccessPresentationLookup,
   AdminAuthorizationContextRepository,
   AdminIdentityAuthorizationContext,
   AdminIdentityLookup,
@@ -59,6 +61,38 @@ export class PrismaAdminAuthorizationContextRepository
               roles: membership.roleAssignments.map((assignment) => assignment.role as AdminRole),
             },
           }
+        : {}),
+    };
+  }
+
+  public async findAccessPresentation(
+    input: AdminAccessPresentationLookup,
+  ): Promise<AdminAccessPresentation | undefined> {
+    const membership = await this.prisma.adminOrganizationMembership.findFirst({
+      where: {
+        id: input.membershipId,
+        principalId: input.principalId,
+        organizationId: input.organizationId,
+      },
+      select: {
+        organization: { select: { name: true } },
+        principal: {
+          select: {
+            displayName: true,
+            email: true,
+          },
+        },
+      },
+    });
+    if (!membership) return undefined;
+
+    return {
+      organizationName: membership.organization.name,
+      ...(membership.principal.displayName !== null
+        ? { principalDisplayName: membership.principal.displayName }
+        : {}),
+      ...(membership.principal.email !== null
+        ? { principalEmail: membership.principal.email }
         : {}),
     };
   }
