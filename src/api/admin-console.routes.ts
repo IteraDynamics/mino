@@ -1,4 +1,5 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
+import { ADMIN_GOVERNANCE_CONSOLE_JS } from "../console/admin-governance-console-script.js";
 import { ADMIN_CONSOLE_CSS } from "../console/admin-console-styles.js";
 import { ADMIN_CONSOLE_HTML } from "../console/admin-console-page.js";
 import { ADMIN_CONSOLE_JS } from "../console/admin-console-script.js";
@@ -16,11 +17,13 @@ const CONTENT_SECURITY_POLICY = [
   "frame-ancestors 'none'",
 ].join("; ");
 
+const ADMIN_CONSOLE_BUNDLE = `${ADMIN_CONSOLE_JS}\n${ADMIN_GOVERNANCE_CONSOLE_JS}`;
+
 export async function registerAdminConsoleRoutes(app: FastifyInstance): Promise<void> {
   app.get("/console", async (_request, reply) => sendAsset(reply, "text/html; charset=utf-8", ADMIN_CONSOLE_HTML));
   app.get("/console/", async (_request, reply) => sendAsset(reply, "text/html; charset=utf-8", ADMIN_CONSOLE_HTML));
   app.get("/console/styles.css", async (_request, reply) => sendAsset(reply, "text/css; charset=utf-8", ADMIN_CONSOLE_CSS));
-  app.get("/console/app.js", async (_request, reply) => sendAsset(reply, "text/javascript; charset=utf-8", ADMIN_CONSOLE_JS));
+  app.get("/console/app.js", async (_request, reply) => sendAsset(reply, "text/javascript; charset=utf-8", ADMIN_CONSOLE_BUNDLE));
 }
 
 function sendAsset(reply: FastifyReply, contentType: string, body: string) {
