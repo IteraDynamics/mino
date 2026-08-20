@@ -83,11 +83,9 @@ The lifecycle surface remains deliberately one-way for the pilot: suspension is 
 
 ## PR #42 — Guided first-run setup and human money UX
 
-**Status: in progress.**
+**Status: implemented by GitHub PR #42.**
 
-Turn the existing administration screens into an explicit design-partner onboarding path without introducing a browser-side authority model.
-
-Implemented candidate scope:
+Implemented scope:
 
 - an Overview checklist for beneficiary → keyed agent → active policy → active execution route → governed mandate;
 - readiness derived only from existing permission-checked administrative reads;
@@ -100,30 +98,35 @@ Implemented candidate scope:
 - clear copy distinguishing policy creation, four-eyes activation, mandate proposal, approval, and apply;
 - bounded first-100 inventory inspection with an explicit truncation warning rather than pretending the checklist is an authoritative inventory service.
 
-Non-goals:
+Non-goals preserved:
 
 - no new backend permission or mutation authority;
 - no new database schema/migration;
 - no browser interpretation of policy verdicts or mandate validity;
-- no generic provider onboarding yet;
+- no generic provider onboarding;
 - no transaction execution button in the administrative console.
 
 ## PR #43 — Agent integration kit
 
-Give a design partner's engineer a small supported path to call Mino correctly.
+**Status: in progress.**
 
-Planned scope:
+Give a design partner's engineer a small supported Node.js path to call Mino correctly without rebuilding the signing and retry protocol from internal implementation details.
 
-- minimal TypeScript/reference client rather than a broad SDK platform;
-- agent key generation/reference handling guidance;
-- exact request signing;
-- mandate attachment;
-- idempotency handling;
-- safe retry/reconciliation behavior;
-- examples for ALLOW, BLOCK, pending transaction approval, and governed authority setup;
-- integration documentation that starts from a customer workflow rather than Mino internals.
+Implemented candidate scope:
 
-The kit must wrap existing protocol behavior, not invent a weaker client-side authorization model.
+- a minimal `MinoAgentRequestSigner` that uses the same canonical signing payload and Ed25519 helper as the production verifier;
+- a small `MinoACPAgentClient` for the current create/retrieve/update/cancel/complete ACP edge;
+- Ed25519 key-generation bootstrap helper plus explicit private-key handling guidance;
+- mandate attachment and local agent-binding sanity check without pretending client-side token decoding is verification;
+- caller-owned stable idempotency helpers rather than hidden per-attempt key generation;
+- a fresh timestamp/nonce/signature on every HTTP attempt so semantic retries are not replayed proofs;
+- explicit completion retry advice for transaction approval and unresolved payment outcomes;
+- no automatic mutation retry loop and no conversion of transport uncertainty into assumed failure;
+- exact response classifications for success, block, approval, unresolved outcome, idempotency conflict, auth/protocol/upstream failure;
+- design-partner documentation starting from key enrollment and mandate delivery through ALLOW/BLOCK/approval/reconciliation behavior;
+- executable compatibility tests against the real `AgentRequestVerifier`.
+
+The kit wraps existing protocol behavior. It does not move policy evaluation, mandate verification, merchant authority, nonce replay protection, spend reservation, payment outcome interpretation, or reconciliation authority into customer code.
 
 ## PR #44 — First design-partner execution path
 
