@@ -18,6 +18,8 @@ integration("production administrative policy management HTTP surface", () => {
   const otherOrganizationId = randomUUID();
   const principalId = randomUUID();
   const membershipId = randomUUID();
+  const approverPrincipalId = randomUUID();
+  const approverMembershipId = randomUUID();
   const userId = randomUUID();
   const agentId = randomUUID();
   const mandateId = randomUUID();
@@ -34,19 +36,22 @@ integration("production administrative policy management HTTP surface", () => {
     await pool.query(
       `insert into "AdminPrincipal"
         ("id", "issuer", "subject", "status", "createdAt", "updatedAt")
-       values ($1, $2, 'policy-management-admin', 'ACTIVE', now(), now())`,
-      [principalId, issuer],
+       values ($1, $2, 'policy-management-admin', 'ACTIVE', now(), now()),
+              ($3, $2, 'policy-management-approver', 'ACTIVE', now(), now())`,
+      [principalId, issuer, approverPrincipalId],
     );
     await pool.query(
       `insert into "AdminOrganizationMembership"
         ("id", "organizationId", "principalId", "status", "createdAt", "updatedAt")
-       values ($1, $2, $3, 'ACTIVE', now(), now())`,
-      [membershipId, organizationId, principalId],
+       values ($1, $2, $3, 'ACTIVE', now(), now()),
+              ($4, $2, $5, 'ACTIVE', now(), now())`,
+      [membershipId, organizationId, principalId, approverMembershipId, approverPrincipalId],
     );
     await pool.query(
       `insert into "AdminRoleAssignment" ("id", "membershipId", "role", "assignedAt")
-       values ($1, $2, 'FINANCE_MANAGER', now())`,
-      [randomUUID(), membershipId],
+       values ($1, $2, 'FINANCE_MANAGER', now()),
+              ($3, $4, 'FINANCE_MANAGER', now())`,
+      [randomUUID(), membershipId, randomUUID(), approverMembershipId],
     );
     await pool.query(
       `insert into "User" ("id", "organizationId", "email", "status", "createdAt", "updatedAt")
@@ -63,6 +68,7 @@ integration("production administrative policy management HTTP surface", () => {
 
   afterAll(async () => {
     const organizationIds = [organizationId, otherOrganizationId];
+    await pool.query(`delete from "AdminGovernanceRequest" where "organizationId" = any($1::uuid[])`, [organizationIds]);
     await pool.query(`delete from "AdminAuditLog" where "organizationId" = any($1::uuid[])`, [organizationIds]);
     await pool.query(`delete from "AdminAuditChainHead" where "organizationId" = any($1::uuid[])`, [organizationIds]);
     await pool.query(`delete from "AgentMandate" where "organizationId" = any($1::uuid[])`, [organizationIds]);
@@ -70,11 +76,11 @@ integration("production administrative policy management HTTP surface", () => {
     await pool.query(`delete from "AgentIdentity" where "organizationId" = any($1::uuid[])`, [organizationIds]);
     await pool.query(`delete from "User" where "organizationId" = any($1::uuid[])`, [organizationIds]);
     await pool.query(`delete from "Organization" where "id" = any($1::uuid[])`, [organizationIds]);
-    await pool.query(`delete from "AdminPrincipal" where "id" = $1`, [principalId]);
+    await pool.query(`delete from "AdminPrincipal" where "id" = any($1::uuid[])`, [[principalId, approverPrincipalId]]);
     await pool.end();
   });
 
-  it("creates, versions, and activates policies through signed JWT/RBAC while preserving version-local activation", async () => {
+  it("creates, versions, and activates policies through signed JWT/RBAC plus four-eyes governance while preserving version-local activation", async () => {
     const publicPem = jwtKeys.publicKey.export({ type: "spki", format: "pem" }).toString();
     const production = await createProductionApplication(productionConfig(), {
       logger: false,
@@ -88,7 +94,54 @@ integration("production administrative policy management HTTP surface", () => {
       ],
     });
     const headers = { authorization: `Bearer ${token(jwtKeys.privateKey)}` };
+    const approverHeaders = {
+      authorization: `Bearer ${token(jwtKeys.privateKey, "policy-management-approver")}`,
+    };
     const base = `/v1/admin/organizations/${organizationId}/policies`;
+
+    const governPolicyActivation = async (targetPolicyId: string, idempotencyKey: string) => {
+      const proposed = await production.app.inject({
+        method: "POST",
+        url: `${base}/${targetPolicyId}/activate`,
+        headers: { ...headers, "idempotency-key": idempotencyKey },
+      });
+      expect(proposed.statusCode).toBe(202);
+      const proposedBody = proposed.json<{
+        outcome: string;
+        governanceRequest: { id: string; status: string };
+      }>();
+      expect(proposedBody).toMatchObject({
+        outcome: "PENDING_GOVERNANCE",
+        governanceRequest: { status: "PENDING" },
+      });
+      const governanceBase =
+        `/v1/admin/organizations/${organizationId}/governance/${proposedBody.governanceRequest.id}`;
+      const approved = await production.app.inject({
+        method: "POST",
+        url: `${governanceBase}/votes`,
+        headers: approverHeaders,
+        payload: { decision: "APPROVE" },
+      });
+      expect(approved.statusCode).toBe(200);
+      expect(approved.json()).toMatchObject({
+        outcome: "UPDATED",
+        governanceRequest: { status: "APPROVED" },
+      });
+      const applied = await production.app.inject({
+        method: "POST",
+        url: `${governanceBase}/apply`,
+        headers,
+      });
+      expect(applied.statusCode).toBe(200);
+      expect(applied.json()).toMatchObject({
+        outcome: "APPLIED",
+        changed: true,
+        action: "POLICY_ACTIVATE",
+        policy: { id: targetPolicyId, active: true },
+      });
+      return applied;
+    };
+
     const initialPayload = {
       name: "Enterprise Procurement",
       baseCurrency: "USD",
@@ -139,13 +192,16 @@ integration("production administrative policy management HTTP surface", () => {
         },
       });
 
-      const activatedV1 = await production.app.inject({
-        method: "POST",
-        url: `${base}/${policyV1Id}/activate`,
-        headers,
+      const activatedV1 = await governPolicyActivation(
+        policyV1Id,
+        "activate-enterprise-procurement-v1",
+      );
+      expect(activatedV1.json()).toMatchObject({
+        outcome: "APPLIED",
+        changed: true,
+        action: "POLICY_ACTIVATE",
+        policy: { active: true },
       });
-      expect(activatedV1.statusCode).toBe(200);
-      expect(activatedV1.json()).toMatchObject({ outcome: "UPDATED", changed: true, policy: { active: true } });
       expect((await production.repositories.policies.getById(policyV1Id))?.active).toBe(true);
 
       await pool.query(
@@ -219,15 +275,10 @@ integration("production administrative policy management HTTP surface", () => {
       expect(versionReplay.statusCode).toBe(200);
       expect(versionReplay.json()).toMatchObject({ outcome: "REPLAYED", changed: false });
 
-      expect(
-        (
-          await production.app.inject({
-            method: "POST",
-            url: `${base}/${policyV2Id}/activate`,
-            headers,
-          })
-        ).statusCode,
-      ).toBe(200);
+      await governPolicyActivation(
+        policyV2Id,
+        "activate-enterprise-procurement-v2",
+      );
       expect((await production.repositories.policies.getById(policyV1Id))?.active).toBe(true);
       expect((await production.repositories.policies.getById(policyV2Id))?.active).toBe(true);
       expect(await production.repositories.mandates.getById(mandateId)).toBeDefined();
@@ -260,14 +311,20 @@ integration("production administrative policy management HTTP surface", () => {
       );
       expect(audits.rows.map((row) => row.action)).toEqual([
         "policy.create",
+        "governance.propose",
+        "governance.approve",
         "policy.activate",
+        "governance.apply",
         "policy.version.create",
+        "governance.propose",
+        "governance.approve",
         "policy.activate",
+        "governance.apply",
         "policy.deactivate",
       ]);
       expect(await production.adminAuditVerifier.verifyOrganization(organizationId)).toMatchObject({
         valid: true,
-        checkedEvents: 5,
+        checkedEvents: 11,
       });
     } finally {
       await production.close();
@@ -275,7 +332,10 @@ integration("production administrative policy management HTTP surface", () => {
   });
 });
 
-function token(privateKey: KeyObject): string {
+function token(
+  privateKey: KeyObject,
+  subject = "policy-management-admin",
+): string {
   const header = Buffer.from(
     JSON.stringify({ alg: "RS256", kid: "policy-management-rsa-1", typ: "JWT" }),
     "utf8",
@@ -283,7 +343,7 @@ function token(privateKey: KeyObject): string {
   const payload = Buffer.from(
     JSON.stringify({
       iss: issuer,
-      sub: "policy-management-admin",
+      sub: subject,
       aud: audience,
       iat: Math.floor(now.getTime() / 1_000) - 60,
       exp: Math.floor(now.getTime() / 1_000) + 300,

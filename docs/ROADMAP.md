@@ -1,4 +1,4 @@
-# Mino roadmap through PR #30
+# Mino roadmap through PR #30, with governance completion
 
 This document preserves the planned sequencing after PR #23 so future work does not have to be reconstructed from conversation history.
 
@@ -6,7 +6,7 @@ The roadmap is a sequencing and architecture contract, not a frozen endpoint spe
 
 ## Implementation status
 
-The requested implementation sequence through PR #30 is now complete except for the deliberately deferred high-risk administrative change-governance slice originally planned as roadmap PR #27.
+The originally requested implementation sequence through PR #30 is complete. The deliberately deferred high-risk administrative change-governance slice originally planned as roadmap PR #27 is implemented by GitHub PR #39.
 
 Implemented:
 
@@ -14,17 +14,14 @@ Implemented:
 - #24 — policy management;
 - #25 — merchant administration;
 - #26 — mandate issuance and revocation;
+- roadmap #27 — high-risk administrative change governance / durable four-eyes separation of duties, implemented by GitHub PR #39;
 - #28 — transaction and approval administrative APIs;
 - #29 — audit and operations APIs;
 - #30 — first web console.
 
-Deferred and still unimplemented:
+GitHub PR #27 itself was a short-lived draft of the transaction/approval work and was closed unmerged solely to preserve the requested repository numbering for PR #28. It must not be interpreted as implementation of the roadmap #27 governance slice. The actual implementation is GitHub PR #39.
 
-- roadmap #27 — high-risk administrative change governance / durable four-eyes separation of duties.
-
-GitHub PR #27 itself was a short-lived draft of the transaction/approval work and was closed unmerged solely to preserve the requested repository numbering for PR #28. It must not be interpreted as implementation of the roadmap #27 governance slice.
-
-Until that governance slice is implemented, sensitive administrative actions remain protected by the existing pinned-issuer authentication, organization-local RBAC, narrow permissions, durable state invariants, and signed administrative audit, but they are **not** multi-human/four-eyes governed.
+The bounded four-eyes layer applies to authority-creating/enabling mutations selected by the roadmap: mandate issuance and policy activation. Other administrative mutations remain direct RBAC unless separately governed by design; authority-removing actions such as mandate revocation and policy deactivation deliberately remain available without waiting for a second administrator.
 
 ## Governing implementation rules
 
@@ -105,25 +102,29 @@ This is the first administrative slice that can grant economic authority. It mus
 
 ## Phase 2 — complete the administrative governance and operating loop
 
-### PR #27 — High-risk administrative change governance
+### Roadmap PR #27 — High-risk administrative change governance
 
-**Status: deferred and unimplemented.**
+**Status: implemented by GitHub PR #39.**
 
-Layer explicit governance above RBAC for security-sensitive administrative changes.
+The implemented slice layers explicit governance above RBAC for a bounded set of security-sensitive administrative changes.
 
-Planned scope:
+Implemented scope:
 
-- identify a bounded set of high-risk actions that require additional governance, centered on actions such as mandate issuance and policy activation rather than every routine write;
-- represent the pending administrative change durably and bind approval to the exact proposed mutation digest and organization;
-- require distinct authorized administrative principals when a four-eyes rule applies;
-- support deterministic expiry, rejection, duplicate-vote/retry handling, and terminal resolution;
-- revalidate the target state and authorizing permissions before applying an approved mutation so stale approvals cannot authorize changed state;
-- commit the eventual governed mutation and its signed administrative receipt atomically;
-- retain evidence of the approval/governance decision without storing secrets.
+- `mandate.issue` and `policy.activate` enter a durable governance proposal flow rather than mutating immediately in the production administrative composition;
+- the proposal is bound to the exact requested mutation, organization, and target/precondition digest;
+- the proposer cannot approve their own proposal;
+- approval requires a distinct administrator who currently holds the same underlying narrow mutation permission;
+- proposal creation and same-vote retries are deterministic and replay-safe; changed reuse conflicts;
+- rejection and expiry are terminal, and changed target/authority state becomes `STALE` rather than being silently accepted;
+- the explicit apply step revalidates the applying principal, original proposer, distinct approver, and current target state before mutating;
+- the eventual mutation, governance applied transition, and signed administrative evidence commit in one PostgreSQL transaction;
+- mandate bearer tokens are minted only during successful apply and are returned once rather than stored in governance state;
+- `governance.read` exposes the durable queue without independently granting mutation authority;
+- the web console has a separate governance view and no longer represents these two mutations as direct-RBAC actions.
 
 Critical boundary:
 
-This should be a bounded governance layer above deterministic RBAC, not a customer-authored arbitrary ABAC/expression engine. It should also remain distinct from transaction-level human spend approvals, whose invariants and trust boundary are different.
+This remains a bounded governance layer above deterministic RBAC, not a customer-authored arbitrary ABAC/expression engine. It remains distinct from transaction-level human spend approvals, whose invariants and trust boundary are different. Authority-removing mutations such as `mandate.revoke` and `policy.deactivate` remain direct so an authorized administrator can fail closed immediately.
 
 ### PR #28 — Transaction and approval administrative APIs
 
@@ -165,7 +166,7 @@ These APIs are observational/verification surfaces. They must not become mutatio
 
 Build the first Mino administrative web console on top of the authenticated control-plane APIs.
 
-Implemented scope:
+Implemented scope, including the later PR #39 governance augmentation:
 
 - organization/access context and exact permission-aware navigation;
 - agent enrollment and lifecycle management;
@@ -177,7 +178,8 @@ Implemented scope:
 - audit verification and operational visibility;
 - same-origin first-party assets served by the existing Fastify runtime;
 - memory-only use of an externally issued administrative JWT rather than a new Mino browser-session authority;
-- explicit Direct RBAC labeling because the separately planned high-risk governance flow remains unavailable.
+- a separate durable Governance view for mandate issuance and policy activation;
+- one-time mandate token presentation only after a successfully approved and revalidated governance apply.
 
 Console rules:
 
@@ -187,7 +189,7 @@ Console rules:
 - unauthorized controls should be absent or disabled for usability, but server-side permission enforcement remains mandatory;
 - secret-bearing administrative credentials must not be persisted in browser storage;
 - console work should not silently redesign core transaction semantics merely to simplify UI implementation;
-- the console must not represent a direct-RBAC action as four-eyes governed while roadmap #27 remains deferred.
+- the console must distinguish four-eyes-governed actions from administrative mutations that intentionally remain direct RBAC.
 
 ## Roadmap status
 
@@ -197,10 +199,10 @@ Console rules:
 | #24 | Policy management | Implemented |
 | #25 | Merchant administration | Implemented |
 | #26 | Mandate issuance and revocation | Implemented |
-| #27 | High-risk administrative change governance | **Deferred / not implemented** |
+| #27 | High-risk administrative change governance | **Implemented by GitHub PR #39** |
 | #28 | Transaction and approval administrative APIs | Implemented |
 | #29 | Audit and operations APIs | Implemented |
-| #30 | First web console | Implemented by PR #30 |
+| #30 | First web console | Implemented by PR #30; governance workflow augmented by PR #39 |
 
 The originally intended dependency chain was:
 
@@ -215,4 +217,4 @@ agent identity
     -> web console
 ```
 
-The requested implementation intentionally proceeded with #28–#30 while #27 remained deferred. Those later slices therefore preserve the direct-RBAC boundary and do not claim the missing four-eyes property. A future implementation of high-risk governance should layer above the durable mutation APIs and then be consumed by the console; it must not be emulated with browser-only approval logic.
+Implementation intentionally proceeded with #28–#30 while roadmap #27 remained deferred, then returned to complete the missing governance layer as GitHub PR #39. The governance implementation layers above the durable mutation APIs and is consumed by the console; it is not emulated with browser-only approval logic.

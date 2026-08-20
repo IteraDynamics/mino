@@ -21,6 +21,8 @@ integration("production administrative mandate issuance and revocation HTTP surf
   const otherOrganizationId = randomUUID();
   const principalId = randomUUID();
   const membershipId = randomUUID();
+  const approverPrincipalId = randomUUID();
+  const approverMembershipId = randomUUID();
   const userId = randomUUID();
   const agentId = randomUUID();
   const policyId = randomUUID();
@@ -63,24 +65,28 @@ integration("production administrative mandate issuance and revocation HTTP surf
     await pool.query(
       `insert into "AdminPrincipal"
         ("id", "issuer", "subject", "status", "createdAt", "updatedAt")
-       values ($1, $2, 'mandate-administration-admin', 'ACTIVE', now(), now())`,
-      [principalId, issuer],
+       values ($1, $2, 'mandate-administration-admin', 'ACTIVE', now(), now()),
+              ($3, $2, 'mandate-administration-approver', 'ACTIVE', now(), now())`,
+      [principalId, issuer, approverPrincipalId],
     );
     await pool.query(
       `insert into "AdminOrganizationMembership"
         ("id", "organizationId", "principalId", "status", "createdAt", "updatedAt")
-       values ($1, $2, $3, 'ACTIVE', now(), now())`,
-      [membershipId, organizationId, principalId],
+       values ($1, $2, $3, 'ACTIVE', now(), now()),
+              ($4, $2, $5, 'ACTIVE', now(), now())`,
+      [membershipId, organizationId, principalId, approverMembershipId, approverPrincipalId],
     );
     await pool.query(
       `insert into "AdminRoleAssignment" ("id", "membershipId", "role", "assignedAt")
-       values ($1, $2, 'FINANCE_MANAGER', now())`,
-      [randomUUID(), membershipId],
+       values ($1, $2, 'FINANCE_MANAGER', now()),
+              ($3, $4, 'FINANCE_MANAGER', now())`,
+      [randomUUID(), membershipId, randomUUID(), approverMembershipId],
     );
   });
 
   afterAll(async () => {
     const organizationIds = [organizationId, otherOrganizationId];
+    await pool.query(`delete from "AdminGovernanceRequest" where "organizationId" = any($1::uuid[])`, [organizationIds]);
     await pool.query(`delete from "AdminAuditLog" where "organizationId" = any($1::uuid[])`, [organizationIds]);
     await pool.query(`delete from "AdminAuditChainHead" where "organizationId" = any($1::uuid[])`, [organizationIds]);
     await pool.query(`delete from "AgentMandate" where "organizationId" = any($1::uuid[])`, [organizationIds]);
@@ -88,11 +94,11 @@ integration("production administrative mandate issuance and revocation HTTP surf
     await pool.query(`delete from "AgentIdentity" where "organizationId" = any($1::uuid[])`, [organizationIds]);
     await pool.query(`delete from "User" where "organizationId" = any($1::uuid[])`, [organizationIds]);
     await pool.query(`delete from "Organization" where "id" = any($1::uuid[])`, [organizationIds]);
-    await pool.query(`delete from "AdminPrincipal" where "id" = $1`, [principalId]);
+    await pool.query(`delete from "AdminPrincipal" where "id" = any($1::uuid[])`, [[principalId, approverPrincipalId]]);
     await pool.end();
   });
 
-  it("issues one-time bearer authority and makes revocation immediate at the production resolver", async () => {
+  it("issues one-time bearer authority through four-eyes governance and makes revocation immediate at the production resolver", async () => {
     const config = productionConfig();
     const jwtPublic = pemPublic(jwtKeys.publicKey);
     const production = await createProductionApplication(config, {
@@ -110,6 +116,9 @@ integration("production administrative mandate issuance and revocation HTTP surf
       authorization: `Bearer ${adminToken(jwtKeys.privateKey)}`,
       "idempotency-key": "http-grant-2026-08-16",
     };
+    const approverHeaders = {
+      authorization: `Bearer ${adminToken(jwtKeys.privateKey, "mandate-administration-approver")}`,
+    };
     const base = `/v1/admin/organizations/${organizationId}/mandates`;
     const payload = {
       userId,
@@ -119,14 +128,49 @@ integration("production administrative mandate issuance and revocation HTTP surf
     };
 
     try {
-      const issued = await production.app.inject({
+      const proposed = await production.app.inject({
         method: "POST",
         url: base,
         headers,
         payload,
       });
-      expect(issued.statusCode).toBe(201);
-      expect(issued.headers["cache-control"]).toBe("no-store");
+      expect(proposed.statusCode).toBe(202);
+      expect(proposed.headers["cache-control"]).toBe("no-store");
+      const proposedBody = proposed.json<{
+        outcome: string;
+        governanceRequest: { id: string; status: string };
+      }>();
+      expect(proposedBody).toMatchObject({
+        outcome: "PENDING_GOVERNANCE",
+        governanceRequest: { status: "PENDING" },
+      });
+      expect(proposed.body).not.toContain("mandateToken");
+
+      const governanceBase =
+        `/v1/admin/organizations/${organizationId}/governance/${proposedBody.governanceRequest.id}`;
+      const approved = await production.app.inject({
+        method: "POST",
+        url: `${governanceBase}/votes`,
+        headers: approverHeaders,
+        payload: { decision: "APPROVE" },
+      });
+      expect(approved.statusCode).toBe(200);
+      expect(approved.json()).toMatchObject({
+        outcome: "UPDATED",
+        governanceRequest: { status: "APPROVED" },
+      });
+
+      const issued = await production.app.inject({
+        method: "POST",
+        url: `${governanceBase}/apply`,
+        headers: { authorization: headers.authorization },
+      });
+      expect(issued.statusCode).toBe(200);
+      expect(issued.json()).toMatchObject({
+        outcome: "APPLIED",
+        changed: true,
+        action: "MANDATE_ISSUE",
+      });
       const issuedBody = issued.json<{
         mandateToken: string;
         mandate: {
@@ -206,7 +250,12 @@ integration("production administrative mandate issuance and revocation HTTP surf
       expect(replay.json()).toMatchObject({
         outcome: "REPLAYED",
         changed: false,
-        mandate: { id: mandateId },
+        governanceRequest: {
+          id: proposedBody.governanceRequest.id,
+          status: "APPLIED",
+          resultResourceType: "mandate",
+          resultResourceId: mandateId,
+        },
       });
       expect(replay.body).not.toContain("mandateToken");
 
@@ -263,13 +312,19 @@ integration("production administrative mandate issuance and revocation HTTP surf
           order by "chainSequence" asc`,
         [organizationId],
       );
-      expect(audits.rows.map((row) => row.action)).toEqual(["mandate.issue", "mandate.revoke"]);
+      expect(audits.rows.map((row) => row.action)).toEqual([
+        "governance.propose",
+        "governance.approve",
+        "mandate.issue",
+        "governance.apply",
+        "mandate.revoke",
+      ]);
       const auditText = JSON.stringify(audits.rows);
       expect(auditText).not.toContain(issuedBody.mandateToken);
       expect(auditText).not.toContain("http-grant-2026-08-16");
       expect(await production.adminAuditVerifier.verifyOrganization(organizationId)).toMatchObject({
         valid: true,
-        checkedEvents: 2,
+        checkedEvents: 5,
       });
     } finally {
       await production.close();
@@ -277,7 +332,10 @@ integration("production administrative mandate issuance and revocation HTTP surf
   });
 });
 
-function adminToken(privateKey: KeyObject): string {
+function adminToken(
+  privateKey: KeyObject,
+  subject = "mandate-administration-admin",
+): string {
   const header = Buffer.from(
     JSON.stringify({ alg: "RS256", kid: "mandate-administration-rsa-1", typ: "JWT" }),
     "utf8",
@@ -285,7 +343,7 @@ function adminToken(privateKey: KeyObject): string {
   const payload = Buffer.from(
     JSON.stringify({
       iss: issuer,
-      sub: "mandate-administration-admin",
+      sub: subject,
       aud: audience,
       iat: Math.floor(now.getTime() / 1_000) - 60,
       exp: Math.floor(now.getTime() / 1_000) + 300,

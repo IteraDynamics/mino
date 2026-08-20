@@ -1,6 +1,12 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { z } from "zod";
 import {
+  AdminGovernancePermissionError,
+  AdminGovernanceValidationError,
+  type AdminGovernanceProposalResult,
+  type PostgresAdminHighRiskGovernanceService,
+} from "../modules/admin/admin-high-risk-governance.js";
+import {
   AdminPolicyValidationError,
   type AdminPolicyCreateResult,
   type AdminPolicyLifecycleResult,
@@ -17,6 +23,10 @@ const policyParamsSchema = z.object({
   policyId: z.string().uuid(),
 });
 const organizationParamsSchema = z.object({ organizationId: z.string().uuid() });
+const idempotencyKeySchema = z.string().min(1).max(256).refine(
+  (value) => !/[\u0000-\u001f\u007f]/.test(value),
+  "idempotency key must not contain control characters",
+);
 
 const policyConfigurationShape = {
   baseCurrency: z.string().min(3).max(3),
@@ -51,6 +61,10 @@ export interface AdminPolicyManagementRouteDependencies
     PostgresAdminPolicyManagementService,
     "getPolicy" | "createPolicy" | "createVersion" | "activate" | "deactivate"
   >;
+  readonly highRiskGovernance?: Pick<
+    PostgresAdminHighRiskGovernanceService,
+    "proposePolicyActivation"
+  >;
 }
 
 export async function registerAdminPolicyManagementRoutes(
@@ -70,16 +84,12 @@ export async function registerAdminPolicyManagementRoutes(
       params.data.organizationId,
       "policy.read",
     );
-    if (!authorization) {
-      return;
-    }
+    if (!authorization) return;
     const policy = await dependencies.policyManagement.getPolicy(
       params.data.organizationId,
       params.data.policyId,
     );
-    if (!policy) {
-      return reply.code(404).send({ error: "not_found" });
-    }
+    if (!policy) return reply.code(404).send({ error: "not_found" });
     return reply.code(200).send({ policy });
   });
 
@@ -97,9 +107,7 @@ export async function registerAdminPolicyManagementRoutes(
       params.data.organizationId,
       "policy.create",
     );
-    if (!authorization) {
-      return;
-    }
+    if (!authorization) return;
     try {
       return sendCreateResult(
         reply,
@@ -129,9 +137,7 @@ export async function registerAdminPolicyManagementRoutes(
         params.data.organizationId,
         "policy.create",
       );
-      if (!authorization) {
-        return;
-      }
+      if (!authorization) return;
       try {
         return sendCreateResult(
           reply,
@@ -159,8 +165,31 @@ export async function registerAdminPolicyManagementRoutes(
         dependencies,
         "policy.activate",
       );
-      if (!input) {
-        return;
+      if (!input) return;
+      if (dependencies.highRiskGovernance) {
+        const idempotency = idempotencyKeySchema.safeParse(request.headers["idempotency-key"]);
+        if (!idempotency.success) {
+          reply.header("cache-control", "no-store");
+          return reply.code(400).send({ error: "invalid_request" });
+        }
+        try {
+          return sendGovernanceProposalResult(
+            reply,
+            await dependencies.highRiskGovernance.proposePolicyActivation(
+              input.authorization,
+              input.policyId,
+              idempotency.data,
+            ),
+          );
+        } catch (error) {
+          if (error instanceof AdminGovernanceValidationError) {
+            return reply.code(400).send({ error: "invalid_request" });
+          }
+          if (error instanceof AdminGovernancePermissionError) {
+            return reply.code(403).send({ error: "forbidden" });
+          }
+          throw error;
+        }
       }
       return sendLifecycleResult(
         reply,
@@ -178,9 +207,7 @@ export async function registerAdminPolicyManagementRoutes(
         dependencies,
         "policy.deactivate",
       );
-      if (!input) {
-        return;
-      }
+      if (!input) return;
       return sendLifecycleResult(
         reply,
         await dependencies.policyManagement.deactivate(input.authorization, input.policyId),
@@ -214,10 +241,45 @@ async function authorizeLifecycleMutation(
     params.data.organizationId,
     permission,
   );
-  if (!authorization) {
-    return undefined;
-  }
+  if (!authorization) return undefined;
   return { authorization, policyId: params.data.policyId };
+}
+
+function sendGovernanceProposalResult(
+  reply: FastifyReply,
+  result: AdminGovernanceProposalResult,
+) {
+  switch (result.outcome) {
+    case "PENDING_GOVERNANCE":
+      return reply.code(202).send({
+        outcome: result.outcome,
+        changed: false,
+        requestId: result.requestId,
+        governanceRequest: result.governanceRequest,
+        auditReceipt: result.audit,
+      });
+    case "REPLAYED":
+      return reply.code(200).send({
+        outcome: result.outcome,
+        changed: false,
+        requestId: result.requestId,
+        governanceRequest: result.governanceRequest,
+      });
+    case "ALREADY_APPLIED":
+      return reply.code(200).send({
+        outcome: result.outcome,
+        changed: false,
+        requestId: result.requestId,
+        resourceType: result.resourceType,
+        resourceId: result.resourceId,
+      });
+    case "CONFLICT":
+      return reply.code(409).send({ error: "conflict", requestId: result.requestId });
+    case "NOT_FOUND":
+      return reply.code(404).send({ error: "not_found", requestId: result.requestId });
+    case "INVALID_TARGET":
+      return reply.code(409).send({ error: "invalid_target", requestId: result.requestId });
+  }
 }
 
 function sendCreateResult(reply: FastifyReply, result: AdminPolicyCreateResult) {
