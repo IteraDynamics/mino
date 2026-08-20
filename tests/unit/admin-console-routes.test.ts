@@ -1,9 +1,12 @@
 import Fastify from "fastify";
 import { describe, expect, it } from "vitest";
-import { registerAdminConsoleRoutes } from "../../src/api/admin-console.routes.js";
+import {
+  ADMIN_CONSOLE_BUNDLE,
+  ADMIN_CONSOLE_STYLE_BUNDLE,
+  registerAdminConsoleRoutes,
+} from "../../src/api/admin-console.routes.js";
 import { createApp } from "../../src/app.js";
 import { ADMIN_CONSOLE_HTML } from "../../src/console/admin-console-page.js";
-import { ADMIN_CONSOLE_JS } from "../../src/console/admin-console-script.js";
 
 async function consoleApp() {
   const app = Fastify();
@@ -51,7 +54,7 @@ describe("administrative web console", () => {
     await withAdmin.close();
   });
 
-  it("serves parseable JavaScript and CSS assets without creating a browser credential or HTML-injection path", async () => {
+  it("serves parseable first-party assets without creating a browser credential or HTML-injection path", async () => {
     const app = await consoleApp();
     const [script, styles] = await Promise.all([
       app.inject({ method: "GET", url: "/console/app.js" }),
@@ -65,40 +68,55 @@ describe("administrative web console", () => {
     expect(script.headers["cache-control"]).toContain("no-store");
     expect(styles.headers["cache-control"]).toContain("no-store");
 
-    expect(() => new Function(ADMIN_CONSOLE_JS)).not.toThrow();
-    expect(ADMIN_CONSOLE_JS).not.toMatch(/localStorage|sessionStorage|indexedDB|document\.cookie/);
-    expect(ADMIN_CONSOLE_JS).not.toMatch(/\.innerHTML\s*=|insertAdjacentHTML|\beval\s*\(/);
-    expect(ADMIN_CONSOLE_JS).toContain('credentials: "omit"');
-    expect(ADMIN_CONSOLE_JS).toContain('cache: "no-store"');
-    expect(ADMIN_CONSOLE_JS).toContain('referrerPolicy: "no-referrer"');
-    expect(ADMIN_CONSOLE_JS).toContain('state.token = ""');
-    expect(ADMIN_CONSOLE_JS).not.toContain("state.mandateToken");
+    expect(() => new Function(ADMIN_CONSOLE_BUNDLE)).not.toThrow();
+    expect(ADMIN_CONSOLE_BUNDLE).not.toMatch(/localStorage|sessionStorage|indexedDB|document\.cookie/);
+    expect(ADMIN_CONSOLE_BUNDLE).not.toMatch(/\.innerHTML\s*=|insertAdjacentHTML|\beval\s*\(/);
+    expect(ADMIN_CONSOLE_BUNDLE).toContain('credentials: "omit"');
+    expect(ADMIN_CONSOLE_BUNDLE).toContain('cache: "no-store"');
+    expect(ADMIN_CONSOLE_BUNDLE).toContain('referrerPolicy: "no-referrer"');
+    expect(ADMIN_CONSOLE_BUNDLE).toContain('state.token = ""');
+    expect(ADMIN_CONSOLE_BUNDLE).not.toContain("state.mandateToken");
     expect(ADMIN_CONSOLE_HTML).toContain('autocomplete="off"');
+    expect(ADMIN_CONSOLE_STYLE_BUNDLE).toContain(".principal-chip");
 
     await app.close();
   });
 
-  it("uses existing governed APIs and does not invent payment or audit mutation requests", () => {
+  it("presents human-readable enrolled identity while preserving stable technical IDs", () => {
+    expect(ADMIN_CONSOLE_BUNDLE).toContain("pilotAccessPresentation");
+    expect(ADMIN_CONSOLE_BUNDLE).toContain("organization.name");
+    expect(ADMIN_CONSOLE_BUNDLE).toContain("principal.displayName");
+    expect(ADMIN_CONSOLE_BUNDLE).toContain("principal.email");
+    expect(ADMIN_CONSOLE_BUNDLE).toContain("Organization & administrator");
+    expect(ADMIN_CONSOLE_BUNDLE).toContain("Technical access");
+    expect(ADMIN_CONSOLE_BUNDLE).toContain("Organization ID");
+    expect(ADMIN_CONSOLE_BUNDLE).toContain("Principal ID");
+  });
+
+  it("uses existing governed APIs, reflects completed four-eyes governance, and invents no payment/audit mutation requests", () => {
     for (const path of [
       '"/access"',
       '"/agents"',
       '"/policies"',
       '"/merchants"',
       '"/mandates"',
+      '"/governance?',
       '"/approvals?',
       '"/payments?',
       '"/operations"',
       '"/audit/transactions',
       '"/audit/administrative',
     ]) {
-      expect(ADMIN_CONSOLE_JS).toContain(path);
+      expect(ADMIN_CONSOLE_BUNDLE).toContain(path);
     }
 
-    expect(ADMIN_CONSOLE_JS).not.toMatch(/apiRequest\([^\n]*(?:force-success|force-failure)/);
-    expect(ADMIN_CONSOLE_JS).not.toMatch(/apiRequest\([^\n]*(?:release|commit)-reservation/);
-    expect(ADMIN_CONSOLE_JS).not.toMatch(/apiRequest\([^\n]*(?:repair|rewind|delete)[^\n]*audit/);
-    expect(ADMIN_CONSOLE_JS).not.toMatch(/apiRequest\([^\n]*(?:trigger|run)[^\n]*reconcil/);
-    expect(ADMIN_CONSOLE_JS).toContain("Four-eyes administrative governance is not implemented yet");
-    expect(ADMIN_CONSOLE_JS).toContain("crypto.randomUUID()");
+    expect(ADMIN_CONSOLE_BUNDLE).not.toMatch(/apiRequest\([^\n]*(?:force-success|force-failure)/);
+    expect(ADMIN_CONSOLE_BUNDLE).not.toMatch(/apiRequest\([^\n]*(?:release|commit)-reservation/);
+    expect(ADMIN_CONSOLE_BUNDLE).not.toMatch(/apiRequest\([^\n]*(?:repair|rewind|delete)[^\n]*audit/);
+    expect(ADMIN_CONSOLE_BUNDLE).not.toMatch(/apiRequest\([^\n]*(?:trigger|run)[^\n]*reconcil/);
+    expect(ADMIN_CONSOLE_BUNDLE).not.toContain("Four-eyes administrative governance is not implemented yet");
+    expect(ADMIN_CONSOLE_BUNDLE).toContain("Four-eyes governance active");
+    expect(ADMIN_CONSOLE_BUNDLE).toContain("The bounded four-eyes workflow applies to mandate issuance and policy activation");
+    expect(ADMIN_CONSOLE_BUNDLE).toContain("crypto.randomUUID()");
   });
 });
