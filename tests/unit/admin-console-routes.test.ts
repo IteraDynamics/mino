@@ -78,6 +78,7 @@ describe("administrative web console", () => {
     expect(ADMIN_CONSOLE_BUNDLE).not.toContain("state.mandateToken");
     expect(ADMIN_CONSOLE_HTML).toContain('autocomplete="off"');
     expect(ADMIN_CONSOLE_STYLE_BUNDLE).toContain(".principal-chip");
+    expect(ADMIN_CONSOLE_STYLE_BUNDLE).toContain(".pilot-setup-grid");
 
     await app.close();
   });
@@ -103,6 +104,31 @@ describe("administrative web console", () => {
     expect(ADMIN_CONSOLE_BUNDLE).toContain('label: "Beneficiary"');
     expect(ADMIN_CONSOLE_BUNDLE).toContain("Create an active beneficiary before proposing a mandate.");
     expect(ADMIN_CONSOLE_BUNDLE).not.toContain("/beneficiaries/\" + encodeURIComponent(item.id) + \"/reactivate");
+  });
+
+  it("guides first-run setup from beneficiary through governed mandate without inventing new authority", () => {
+    expect(ADMIN_CONSOLE_BUNDLE).toContain("Pilot setup");
+    expect(ADMIN_CONSOLE_BUNDLE).toContain("Design-partner onboarding");
+    expect(ADMIN_CONSOLE_BUNDLE).toContain("Beneficiary");
+    expect(ADMIN_CONSOLE_BUNDLE).toContain("Agent identity");
+    expect(ADMIN_CONSOLE_BUNDLE).toContain("Execution route");
+    expect(ADMIN_CONSOLE_BUNDLE).toContain("Governed mandate");
+    expect(ADMIN_CONSOLE_BUNDLE).toContain('item.action === "MANDATE_ISSUE"');
+    expect(ADMIN_CONSOLE_BUNDLE).toContain('pilotSetupRead("beneficiary.read"');
+    expect(ADMIN_CONSOLE_BUNDLE).toContain('pilotSetupRead("mandate.read"');
+    expect(ADMIN_CONSOLE_BUNDLE).toContain('pilotSetupRead("governance.read"');
+  });
+
+  it("uses human major-unit policy inputs but submits the existing exact minor-unit API shape", () => {
+    expect(ADMIN_CONSOLE_BUNDLE).toContain("majorCurrencyToMinor");
+    expect(ADMIN_CONSOLE_BUNDLE).toContain("minorCurrencyToMajor");
+    expect(ADMIN_CONSOLE_BUNDLE).toContain('name: "maxBudgetMajor"');
+    expect(ADMIN_CONSOLE_BUNDLE).toContain('name: "rollingDailyLimitMajor"');
+    expect(ADMIN_CONSOLE_BUNDLE).toContain("Per-transaction limit (major units)");
+    expect(ADMIN_CONSOLE_BUNDLE).toContain("without floating-point arithmetic");
+    expect(ADMIN_CONSOLE_BUNDLE).toContain("maxBudgetMinor: majorCurrencyToMinor(raw.maxBudgetMajor, currency)");
+    expect(ADMIN_CONSOLE_BUNDLE).toContain("rollingDailyLimitMinor: majorCurrencyToMinor(raw.rollingDailyLimitMajor, currency)");
+    expect(ADMIN_CONSOLE_BUNDLE).toContain("Changing the currency does not perform foreign-exchange conversion");
   });
 
   it("uses existing governed APIs, reflects completed four-eyes governance, and invents no payment/audit mutation requests", () => {
