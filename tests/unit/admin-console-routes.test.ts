@@ -93,9 +93,22 @@ describe("administrative web console", () => {
     expect(ADMIN_CONSOLE_BUNDLE).toContain("Principal ID");
   });
 
+  it("makes beneficiary setup human-readable and selects an active beneficiary during mandate proposal", () => {
+    expect(ADMIN_CONSOLE_BUNDLE).toContain('key: "beneficiaries"');
+    expect(ADMIN_CONSOLE_BUNDLE).toContain("Spending beneficiaries");
+    expect(ADMIN_CONSOLE_BUNDLE).toContain('permission: "beneficiary.read"');
+    expect(ADMIN_CONSOLE_BUNDLE).toContain('hasPermission("beneficiary.create")');
+    expect(ADMIN_CONSOLE_BUNDLE).toContain('hasPermission("beneficiary.suspend")');
+    expect(ADMIN_CONSOLE_BUNDLE).toContain('apiRequest("/beneficiaries?limit=100")');
+    expect(ADMIN_CONSOLE_BUNDLE).toContain('label: "Beneficiary"');
+    expect(ADMIN_CONSOLE_BUNDLE).toContain("Create an active beneficiary before proposing a mandate.");
+    expect(ADMIN_CONSOLE_BUNDLE).not.toContain("/beneficiaries/\" + encodeURIComponent(item.id) + \"/reactivate");
+  });
+
   it("uses existing governed APIs, reflects completed four-eyes governance, and invents no payment/audit mutation requests", () => {
     for (const path of [
       '"/access"',
+      '"/beneficiaries?',
       '"/agents"',
       '"/policies"',
       '"/merchants"',
