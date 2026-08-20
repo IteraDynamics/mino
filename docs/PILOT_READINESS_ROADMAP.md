@@ -55,58 +55,58 @@ Every pilot-readiness PR should shorten or strengthen this path without weakenin
 
 **Status: implemented by GitHub PR #40.**
 
-The existing administrative product now identifies itself in human terms before adding new customer authority.
-
 Implemented scope:
 
-- enrolled organization name is exposed through `/access` while preserving the stable organization UUID;
-- enrolled administrator display name/email is exposed through `/access` while preserving principal and membership IDs;
-- those values are loaded only after authorization as presentation metadata and never become JWT-derived authorization facts;
-- the console displays human organization/administrator identity before technical UUIDs;
-- technical identifiers remain available for audit/support;
-- post-#39 console/documentation language no longer describes implemented four-eyes governance as deferred;
+- enrolled organization name and administrator display metadata are exposed after authorization while stable IDs remain primary technical identity;
+- presentation metadata does not enter authorization decisions or mutation actor contexts;
+- the console is human-first without removing audit/support identifiers;
+- post-#39 four-eyes documentation is normalized;
 - the concierge pilot boundary is explicit.
-
-Non-goals preserved:
-
-- no new database authority;
-- no browser login/OIDC flow;
-- no policy semantic changes;
-- no provider/runtime changes;
-- no self-service organization signup.
 
 ## PR #41 — Beneficiary administration
 
-**Status: in progress.**
+**Status: implemented by GitHub PR #41.**
 
-Remove the largest current setup hole: mandate issuance should not require out-of-band database provisioning and copy/paste of beneficiary UUIDs.
-
-Implemented candidate scope:
+Implemented scope:
 
 - organization-scoped beneficiary inventory/detail;
-- `beneficiary.read`, `beneficiary.create`, and `beneficiary.suspend` as explicit administrative permissions;
-- normalized organization-local beneficiary creation using the existing `User` model;
-- equivalent active creation retries replay without duplicate administrative audit history;
-- beneficiary suspension and signed administrative audit commit atomically;
-- suspension immediately makes existing bound mandates fail closed because the production mandate resolver already requires an active beneficiary;
-- human-readable active-beneficiary selection during mandate proposal;
-- exact organization scoping and inactive/terminal conflict behavior;
+- explicit `beneficiary.read`, `beneficiary.create`, and `beneficiary.suspend` permissions;
+- normalized organization-local creation using the existing `User` model;
+- equivalent active creation replay without duplicate administrative audit history;
+- atomic suspension plus signed administrative audit;
+- immediate fail-closed mandate invalidation when the beneficiary becomes inactive;
+- active human-readable beneficiary selection during mandate proposal;
+- exact tenant scoping and inactive/terminal conflict behavior;
 - preservation of the distinction between spending-beneficiary `User` and administrative `AdminPrincipal`.
 
-The lifecycle surface is deliberately one-way in this pilot slice: suspension is supported, but reactivation is not. Reactivating a beneficiary could restore still-valid historical mandates, so Mino should not introduce that authority-restoring behavior as a convenience toggle without an explicit governance decision.
+The lifecycle surface remains deliberately one-way for the pilot: suspension is supported, but reactivation is not. Reactivation could restore still-valid historical mandates and therefore requires an explicit future authority-restoration design.
 
 ## PR #42 — Guided first-run setup and human money UX
 
-Turn the existing collection of administration screens into an explicit pilot setup path.
+**Status: in progress.**
 
-Planned scope:
+Turn the existing administration screens into an explicit design-partner onboarding path without introducing a browser-side authority model.
 
-- setup progress across beneficiary → agent → policy → provider/counterparty → mandate governance;
-- human-readable selectors instead of UUID-first fields where safe inventories already exist;
-- currency-major-unit input/display for policy creation while preserving exact minor-unit backend values;
-- sensible explanatory copy around mandate versus policy versus governance;
-- clear empty states and next actions;
-- no browser-side reinterpretation of authorization semantics.
+Implemented candidate scope:
+
+- an Overview checklist for beneficiary → keyed agent → active policy → active execution route → governed mandate;
+- readiness derived only from existing permission-checked administrative reads;
+- direct next actions into the existing governed console surfaces;
+- human-readable beneficiary/agent/policy selectors during mandate proposal;
+- policy monetary entry in major currency units while preserving existing exact backend minor-unit fields;
+- decimal-string plus integer/`BigInt` conversion rather than floating-point money arithmetic;
+- explicit USD/EUR/GBP, JPY, BHD, and KWD decimal precision handling;
+- no automatic FX conversion when currency changes;
+- clear copy distinguishing policy creation, four-eyes activation, mandate proposal, approval, and apply;
+- bounded first-100 inventory inspection with an explicit truncation warning rather than pretending the checklist is an authoritative inventory service.
+
+Non-goals:
+
+- no new backend permission or mutation authority;
+- no new database schema/migration;
+- no browser interpretation of policy verdicts or mandate validity;
+- no generic provider onboarding yet;
+- no transaction execution button in the administrative console.
 
 ## PR #43 — Agent integration kit
 
