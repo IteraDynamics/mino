@@ -13,11 +13,8 @@ export interface AdminHttpAuthorizationDependencies {
 
 export interface AuthorizedAdminHttpContext {
   readonly principalId: string;
-  readonly principalDisplayName?: string;
-  readonly principalEmail?: string;
   readonly membershipId: string;
   readonly organizationId: string;
-  readonly organizationName?: string;
   readonly roles: readonly AdminRole[];
 }
 
@@ -58,17 +55,8 @@ export async function requireAdminPermission(
 
   return {
     principalId: authorization.principalId,
-    ...(authorization.principalDisplayName !== undefined
-      ? { principalDisplayName: authorization.principalDisplayName }
-      : {}),
-    ...(authorization.principalEmail !== undefined
-      ? { principalEmail: authorization.principalEmail }
-      : {}),
     membershipId: authorization.membershipId,
     organizationId: authorization.organizationId,
-    ...(authorization.organizationName !== undefined
-      ? { organizationName: authorization.organizationName }
-      : {}),
     roles: authorization.roles,
   };
 }
