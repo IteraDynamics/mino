@@ -14,6 +14,7 @@ import {
   PostgresRetainedAdminAuditVerifier,
   type AdminAuditCheckpointRetainer,
 } from "../modules/admin/admin-audit-checkpoint-retention.js";
+import { PostgresAdminBeneficiaryAdministrationService } from "../modules/admin/admin-beneficiary-administration.js";
 import {
   PostgresAdminChangeAuditLedger,
   PostgresAdminChangeAuditVerifier,
@@ -217,6 +218,12 @@ export async function createProductionApplication(
     const audit = new PostgresAuditLedger(sql, auditKeys);
     const auditVerifier = new PostgresAuditVerifier(sql, auditKeys);
     const adminAudit = new PostgresAdminChangeAuditLedger(sql, auditKeys);
+    const adminBeneficiaryAdministration = new PostgresAdminBeneficiaryAdministrationService(
+      sql,
+      adminAudit,
+      generateId,
+      clock,
+    );
     const adminAgentEnrollment = new PostgresAdminAgentEnrollmentService(
       sql,
       adminAudit,
@@ -357,6 +364,10 @@ export async function createProductionApplication(
             adminInventory: {
               ...adminAccess,
               inventory: adminInventory,
+            },
+            adminBeneficiaryAdministration: {
+              ...adminAccess,
+              beneficiaries: adminBeneficiaryAdministration,
             },
             adminAgentEnrollment: {
               ...adminAccess,
