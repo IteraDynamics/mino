@@ -19,6 +19,10 @@ import {
 } from "./api/admin-audit-operations.routes.js";
 import { registerAdminConsoleRoutes } from "./api/admin-console.routes.js";
 import {
+  registerAdminHighRiskGovernanceRoutes,
+  type AdminHighRiskGovernanceRouteDependencies,
+} from "./api/admin-high-risk-governance.routes.js";
+import {
   registerAdminInventoryRoutes,
   type AdminInventoryRouteDependencies,
 } from "./api/admin-inventory.routes.js";
@@ -60,6 +64,7 @@ export interface CreateAppOptions {
   readonly adminPolicyManagement?: AdminPolicyManagementRouteDependencies;
   readonly adminMerchantAdministration?: AdminMerchantAdministrationRouteDependencies;
   readonly adminMandateManagement?: AdminMandateManagementRouteDependencies;
+  readonly adminHighRiskGovernance?: AdminHighRiskGovernanceRouteDependencies;
   readonly adminTransactionApproval?: AdminTransactionApprovalRouteDependencies;
   readonly adminAuditOperations?: AdminAuditOperationsRouteDependencies;
   readonly metrics?: MetricsRouteDependencies;
@@ -114,6 +119,9 @@ export async function createApp(options: CreateAppOptions): Promise<FastifyInsta
   }
   if (options.adminMandateManagement) {
     await registerAdminMandateManagementRoutes(app, options.adminMandateManagement);
+  }
+  if (options.adminHighRiskGovernance) {
+    await registerAdminHighRiskGovernanceRoutes(app, options.adminHighRiskGovernance);
   }
   if (options.adminTransactionApproval) {
     await registerAdminTransactionApprovalRoutes(app, options.adminTransactionApproval);
