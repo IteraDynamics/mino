@@ -85,6 +85,25 @@ enum AdminRole {
   AUDITOR
 }
 
+enum AdminGovernanceAction {
+  MANDATE_ISSUE
+  POLICY_ACTIVATE
+}
+
+enum AdminGovernanceStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  EXPIRED
+  APPLIED
+  STALE
+}
+
+enum AdminGovernanceVoteDecision {
+  APPROVE
+  REJECT
+}
+
 model Organization {
   id        String   @id @default(uuid()) @db.Uuid
   name      String
@@ -520,4 +539,54 @@ model AdminAuditLog {
   @@index([principalId, timestamp])
   @@index([requestId])
   @@index([resourceType, resourceId, timestamp])
+}
+
+model AdminGovernanceRequest {
+  id                   String                 @id @default(uuid()) @db.Uuid
+  organizationId       String                 @db.Uuid
+  action               AdminGovernanceAction
+  requiredPermission   String
+  proposalKeyHash      String
+  requestDigest        String
+  proposalDigest       String
+  preconditionDigest   String
+  targetType           String
+  targetId             String?
+  proposalPayload      Json
+  executionPayload     Json
+  proposerPrincipalId  String                 @db.Uuid
+  proposerMembershipId String                 @db.Uuid
+  status               AdminGovernanceStatus  @default(PENDING)
+  requiredApprovals    Int                    @default(1)
+  createdAt            DateTime               @default(now()) @db.Timestamptz(6)
+  expiresAt            DateTime               @db.Timestamptz(6)
+  approvedAt           DateTime?              @db.Timestamptz(6)
+  resolvedAt           DateTime?              @db.Timestamptz(6)
+  appliedAt            DateTime?              @db.Timestamptz(6)
+  resultResourceType   String?
+  resultResourceId     String?
+
+  votes AdminGovernanceVote[]
+
+  @@unique([organizationId, action, proposalKeyHash])
+  @@index([organizationId, status, createdAt])
+  @@index([organizationId, action, createdAt])
+  @@index([expiresAt, status])
+  @@index([proposerPrincipalId, createdAt])
+}
+
+model AdminGovernanceVote {
+  id                  String                      @id @default(uuid()) @db.Uuid
+  governanceRequestId String                      @db.Uuid
+  principalId         String                      @db.Uuid
+  membershipId        String                      @db.Uuid
+  decision            AdminGovernanceVoteDecision
+  comment             String?
+  createdAt           DateTime                    @default(now()) @db.Timestamptz(6)
+
+  governanceRequest AdminGovernanceRequest @relation(fields: [governanceRequestId], references: [id], onDelete: Cascade)
+
+  @@unique([governanceRequestId, principalId])
+  @@index([governanceRequestId, decision, createdAt])
+  @@index([principalId, createdAt])
 }
