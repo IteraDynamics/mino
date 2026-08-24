@@ -1,0 +1,4 @@
+services:
+  mino:
+    environment:
+      MINO_PERSONAL_JWT_ISSUERS_JSON: ${MINO_PERSONAL_JWT_ISSUERS_JSON:?set trusted Personal JWT issuers}
