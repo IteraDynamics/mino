@@ -3,6 +3,8 @@ import { z } from "zod";
 import {
   PersonalPairingValidationError,
   type PersonalAuthenticatedIdentity,
+  type PersonalBootstrapRequest,
+  type PersonalPairingCreateRequest,
   type PostgresPersonalPairingService,
 } from "../modules/personal/personal-pairing.service.js";
 import type { PersonalOwnerBearerAuthenticator } from "../modules/personal/personal-owner-authenticator.js";
@@ -47,8 +49,14 @@ export async function registerPersonalRoutes(
     const parsed = bootstrapBodySchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: "invalid_request" });
 
+    const bootstrapRequest: PersonalBootstrapRequest = {
+      beneficiaryEmail: parsed.data.beneficiaryEmail,
+      ...(parsed.data.displayName ? { displayName: parsed.data.displayName } : {}),
+      ...(parsed.data.accountName ? { accountName: parsed.data.accountName } : {}),
+    };
+
     try {
-      const result = await dependencies.personal.bootstrap(identity, parsed.data);
+      const result = await dependencies.personal.bootstrap(identity, bootstrapRequest);
       if (result.outcome === "CONFLICT") {
         return reply.code(409).send({ outcome: result.outcome, error: "owner_conflict" });
       }
@@ -78,8 +86,15 @@ export async function registerPersonalRoutes(
     const parsed = pairingCreateBodySchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: "invalid_request" });
 
+    const pairingRequest: PersonalPairingCreateRequest = {
+      externalAgentId: parsed.data.externalAgentId,
+      keyId: parsed.data.keyId,
+      publicKey: parsed.data.publicKey,
+      ...(parsed.data.displayName ? { displayName: parsed.data.displayName } : {}),
+    };
+
     try {
-      const pairing = await dependencies.personal.createPairingRequest(parsed.data);
+      const pairing = await dependencies.personal.createPairingRequest(pairingRequest);
       return reply.code(201).send({ pairing });
     } catch (error) {
       if (error instanceof PersonalPairingValidationError) {
