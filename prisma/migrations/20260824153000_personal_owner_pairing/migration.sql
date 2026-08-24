@@ -18,6 +18,7 @@ CREATE TABLE "PersonalOwner" (
 CREATE TABLE "PersonalPairingRequest" (
   "id" UUID NOT NULL,
   "claimSecretHash" TEXT NOT NULL,
+  "proofNonceHash" TEXT NOT NULL,
   "externalAgentId" TEXT NOT NULL,
   "displayName" TEXT,
   "keyId" TEXT NOT NULL,
@@ -40,6 +41,7 @@ CREATE UNIQUE INDEX "PersonalOwner_issuer_subject_key" ON "PersonalOwner"("issue
 CREATE INDEX "PersonalOwner_status_idx" ON "PersonalOwner"("status");
 
 CREATE UNIQUE INDEX "PersonalPairingRequest_claimSecretHash_key" ON "PersonalPairingRequest"("claimSecretHash");
+CREATE UNIQUE INDEX "PersonalPairingRequest_proofNonceHash_key" ON "PersonalPairingRequest"("proofNonceHash");
 CREATE UNIQUE INDEX "PersonalPairingRequest_agentId_key" ON "PersonalPairingRequest"("agentId");
 CREATE INDEX "PersonalPairingRequest_status_expiresAt_idx" ON "PersonalPairingRequest"("status", "expiresAt");
 CREATE INDEX "PersonalPairingRequest_claimedByOwnerId_claimedAt_idx" ON "PersonalPairingRequest"("claimedByOwnerId", "claimedAt");
