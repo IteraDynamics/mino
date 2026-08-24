@@ -5,7 +5,11 @@ Mino Personal pairing establishes **identity ownership**, not spending authority
 ```text
 agent creates Ed25519 keypair
         ↓
+signs a fresh pairing proof with the private key
+        ↓
 POST /v1/personal/pairing-requests
+        ↓
+Mino verifies key possession + rejects proof replay
         ↓
 Mino returns a short-lived claim secret once
         ↓
@@ -20,7 +24,7 @@ NO AgentMandate
 NO payment authority
 ```
 
-The agent private key never enters Mino. Pairing stores only the canonical Ed25519 public key, its SHA-256 fingerprint, and a SHA-256 digest of the one-time claim secret.
+The agent private key never enters Mino. Pairing stores the canonical Ed25519 public key, its SHA-256 fingerprint, a SHA-256 digest of the one-time claim secret, and a SHA-256 digest of the proof nonce. The raw claim secret, proof nonce, and private key are not persisted as authorization material.
 
 ## Personal owner bootstrap
 
@@ -47,9 +51,21 @@ Bootstrap atomically creates:
 
 The `PersonalOwner` is not an `AdminPrincipal`; Personal does not inherit enterprise memberships, roles, four-eyes governance, or admin permissions.
 
-## Pairing request
+## Pairing request and key-possession proof
 
-The agent generates and retains an Ed25519 private key, then submits only the public identity:
+The agent generates and retains an Ed25519 private key. Before requesting pairing it signs the canonical payload:
+
+```text
+MINO-PERSONAL-PAIRING-V1
+<external agent id>
+<display name or empty string>
+<key id>
+<SHA-256 base64url public-key fingerprint>
+<Unix timestamp seconds>
+<fresh nonce>
+```
+
+The request includes the public identity and proof:
 
 ```http
 POST /v1/personal/pairing-requests
@@ -59,9 +75,16 @@ Content-Type: application/json
   "externalAgentId": "openclaw-home",
   "displayName": "OpenClaw",
   "keyId": "openclaw-k1",
-  "publicKey": "-----BEGIN PUBLIC KEY-----..."
+  "publicKey": "-----BEGIN PUBLIC KEY-----...",
+  "proof": {
+    "timestamp": 1787585400,
+    "nonce": "fresh-base64url-nonce",
+    "signature": "<base64url Ed25519 signature>"
+  }
 }
 ```
+
+Mino canonicalizes the supplied public key, computes its fingerprint, rebuilds the exact signing payload, verifies the signature, checks the timestamp window, and rejects reuse of the proof nonce. No durable pairing request exists unless the caller proves possession of the submitted private key.
 
 The response includes a `claimSecret` exactly once. Pairing requests expire after ten minutes by default.
 
@@ -89,7 +112,7 @@ Content-Type: application/json
 
 Mino locks and revalidates the owner, PERSONAL organization, beneficiary, and pairing request in one PostgreSQL transaction. It then enrolls the `AgentIdentity` or reuses an exact existing identity. Conflicting external-agent/key reuse fails closed.
 
-A same-owner retry of an already-successful claim is idempotent. A wrong secret, expired request, different owner, or conflicting agent identity cannot enroll the agent.
+A same-owner retry of an already-successful claim is idempotent. A wrong secret, expired request, different owner, conflicting agent identity, invalid key-possession proof, stale proof, or replayed proof cannot enroll the agent.
 
 ## Authority separation
 
