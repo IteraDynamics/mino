@@ -17,16 +17,13 @@ import {
   type CheckoutProxyResult,
 } from "../modules/proxy/checkout-proxy.service.js";
 
-interface MerchantParams {
+interface CompleteParams {
   merchantId: string;
-}
-
-interface CompleteParams extends MerchantParams {
   checkoutSessionId: string;
 }
 
 export interface PersonalExecutionRouteDependencies {
-  readonly execution: Pick<PersonalACPExecutionService, "createCheckout" | "completeCheckout">;
+  readonly execution: Pick<PersonalACPExecutionService, "completeCheckout">;
   readonly now?: () => Date;
 }
 
@@ -35,27 +32,6 @@ export async function registerPersonalExecutionRoutes(
   dependencies: PersonalExecutionRouteDependencies,
 ): Promise<void> {
   const now = dependencies.now ?? (() => new Date());
-
-  app.post<{ Params: MerchantParams; Body: unknown }>(
-    "/v1/personal/acp/:merchantId/checkout_sessions",
-    async (request, reply) => {
-      try {
-        const security = parseMinoSecurityHeaders(request);
-        const result = await dependencies.execution.createCheckout({
-          merchantId: request.params.merchantId,
-          requestId: randomUUID(),
-          idempotencyKey: requiredHeader(request, "idempotency-key"),
-          path: request.url,
-          body: request.body,
-          security,
-          now: now(),
-        });
-        return sendDecision(reply, result);
-      } catch (error) {
-        return sendError(reply, error);
-      }
-    },
-  );
 
   app.post<{ Params: CompleteParams; Body: unknown }>(
     "/v1/personal/acp/:merchantId/checkout_sessions/:checkoutSessionId/complete",
