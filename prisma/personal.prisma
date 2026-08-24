@@ -31,9 +31,12 @@ model PersonalOwner {
 
 /// Durable, authority-free claim ceremony created by an agent before a human
 /// owner accepts it. The raw claim secret is returned once and never persisted.
+/// The request also stores only a digest of the signed proof nonce so a valid
+/// key-possession proof cannot be replayed into a second pairing ceremony.
 model PersonalPairingRequest {
   id                    String                @id @default(uuid()) @db.Uuid
   claimSecretHash       String                @unique
+  proofNonceHash        String                @unique
   externalAgentId       String
   displayName           String?
   keyId                 String
