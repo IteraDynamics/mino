@@ -6,6 +6,7 @@ import {
   timingSafeEqual,
 } from "node:crypto";
 import type { QueryResultRow } from "pg";
+import { verifyEd25519 } from "../../infrastructure/crypto/ed25519.js";
 
 export interface PersonalAuthenticatedIdentity {
   readonly issuer: string;
@@ -32,11 +33,20 @@ export type PersonalBootstrapResult =
   | { readonly outcome: "REPLAYED"; readonly owner: PersonalOwnerProfile }
   | { readonly outcome: "CONFLICT" };
 
+export interface PersonalPairingProof {
+  /** Unix seconds. */
+  readonly timestamp: number;
+  readonly nonce: string;
+  /** Base64url Ed25519 signature over buildPersonalPairingSigningPayload(...). */
+  readonly signature: string;
+}
+
 export interface PersonalPairingCreateRequest {
   readonly externalAgentId: string;
   readonly displayName?: string;
   readonly keyId: string;
   readonly publicKey: string;
+  readonly proof: PersonalPairingProof;
 }
 
 export interface PersonalPairingReceipt {
@@ -101,6 +111,7 @@ interface OwnerRow extends QueryResultRow {
 interface PairingRow extends QueryResultRow {
   id: string;
   claimSecretHash: string;
+  proofNonceHash: string;
   externalAgentId: string;
   displayName: string | null;
   keyId: string;
@@ -125,7 +136,44 @@ interface AgentRow extends QueryResultRow {
   keyId: string | null;
 }
 
+interface NormalizedAgentEnrollment {
+  readonly externalAgentId: string;
+  readonly displayName?: string;
+  readonly keyId: string;
+  readonly publicKey: string;
+  readonly publicKeyFingerprint: string;
+}
+
+export interface PersonalPairingSigningPayloadInput {
+  readonly externalAgentId: string;
+  readonly displayName?: string;
+  readonly keyId: string;
+  readonly publicKeyFingerprint: string;
+  readonly timestamp: number;
+  readonly nonce: string;
+}
+
 const DEFAULT_PAIRING_TTL_MS = 10 * 60 * 1000;
+const DEFAULT_PAIRING_PROOF_MAX_AGE_SECONDS = 5 * 60;
+
+/**
+ * Canonical proof-of-possession payload for a Personal pairing request.
+ * The private key remains in the agent runtime; Mino verifies this string against
+ * the submitted Ed25519 public key before creating any durable pairing state.
+ */
+export function buildPersonalPairingSigningPayload(
+  input: PersonalPairingSigningPayloadInput,
+): string {
+  return [
+    "MINO-PERSONAL-PAIRING-V1",
+    input.externalAgentId,
+    input.displayName ?? "",
+    input.keyId,
+    input.publicKeyFingerprint,
+    String(input.timestamp),
+    input.nonce,
+  ].join("\n");
+}
 
 export class PostgresPersonalPairingService {
   public constructor(
@@ -134,9 +182,17 @@ export class PostgresPersonalPairingService {
     private readonly now: () => Date = () => new Date(),
     private readonly pairingTtlMs: number = DEFAULT_PAIRING_TTL_MS,
     private readonly generateClaimSecret: () => string = () => randomBytes(32).toString("base64url"),
+    private readonly pairingProofMaxAgeSeconds: number = DEFAULT_PAIRING_PROOF_MAX_AGE_SECONDS,
   ) {
     if (!Number.isSafeInteger(pairingTtlMs) || pairingTtlMs < 60_000 || pairingTtlMs > 60 * 60 * 1000) {
       throw new Error("Personal pairing TTL must be between one minute and one hour");
+    }
+    if (
+      !Number.isSafeInteger(pairingProofMaxAgeSeconds) ||
+      pairingProofMaxAgeSeconds < 30 ||
+      pairingProofMaxAgeSeconds > 15 * 60
+    ) {
+      throw new Error("Personal pairing proof age must be between 30 seconds and 15 minutes");
     }
   }
 
@@ -222,6 +278,12 @@ export class PostgresPersonalPairingService {
   ): Promise<PersonalPairingCreated> {
     const normalized = normalizeAgentEnrollment(request);
     const timestamp = validNow(this.now());
+    const proofNonceHash = verifyPairingProof(
+      request.proof,
+      normalized,
+      timestamp,
+      this.pairingProofMaxAgeSeconds,
+    );
     const expiresAt = new Date(timestamp.getTime() + this.pairingTtlMs);
     const claimSecret = this.generateClaimSecret();
     if (!/^[A-Za-z0-9_-]{32,256}$/.test(claimSecret)) {
@@ -231,13 +293,15 @@ export class PostgresPersonalPairingService {
     const row = (
       await this.sql.query<PairingRow>(
         `insert into "PersonalPairingRequest" (
-           "id", "claimSecretHash", "externalAgentId", "displayName", "keyId", "publicKey",
-           "publicKeyFingerprint", "status", "createdAt", "updatedAt", "expiresAt"
-         ) values ($1::uuid, $2, $3, $4, $5, $6, $7, 'PENDING', $8, $8, $9)
+           "id", "claimSecretHash", "proofNonceHash", "externalAgentId", "displayName", "keyId",
+           "publicKey", "publicKeyFingerprint", "status", "createdAt", "updatedAt", "expiresAt"
+         ) values ($1::uuid, $2, $3, $4, $5, $6, $7, $8, 'PENDING', $9, $9, $10)
+         on conflict ("proofNonceHash") do nothing
          returning *`,
         [
           id,
           hashSecret(claimSecret),
+          proofNonceHash,
           normalized.externalAgentId,
           normalized.displayName ?? null,
           normalized.keyId,
@@ -249,7 +313,7 @@ export class PostgresPersonalPairingService {
       )
     ).rows[0];
     if (!row) {
-      throw new Error("Personal pairing creation returned no row");
+      throw new PersonalPairingValidationError("pairing proof nonce was already used");
     }
     return { ...pairingResponse(row), status: "PENDING", claimSecret };
   }
@@ -465,14 +529,6 @@ function claimedPairingResponse(
   return { ...pairingResponse(row), status: "CLAIMED", agentId: row.agentId };
 }
 
-interface NormalizedAgentEnrollment {
-  readonly externalAgentId: string;
-  readonly displayName?: string;
-  readonly keyId: string;
-  readonly publicKey: string;
-  readonly publicKeyFingerprint: string;
-}
-
 function normalizeAgentEnrollment(request: PersonalPairingCreateRequest): NormalizedAgentEnrollment {
   const externalAgentId = normalizedText(request.externalAgentId, "externalAgentId", 256);
   const keyId = normalizedText(request.keyId, "keyId", 256);
@@ -498,6 +554,56 @@ function normalizeAgentEnrollment(request: PersonalPairingCreateRequest): Normal
     publicKey,
     publicKeyFingerprint: createHash("sha256").update(publicKeyDer).digest("base64url"),
   };
+}
+
+function verifyPairingProof(
+  proof: PersonalPairingProof,
+  agent: NormalizedAgentEnrollment,
+  now: Date,
+  maxAgeSeconds: number,
+): string {
+  if (!Number.isSafeInteger(proof.timestamp) || proof.timestamp <= 0) {
+    throw new PersonalPairingValidationError("pairing proof timestamp is invalid");
+  }
+  const nonce = normalizedProofNonce(proof.nonce);
+  const nowSeconds = Math.floor(now.getTime() / 1_000);
+  if (Math.abs(nowSeconds - proof.timestamp) > maxAgeSeconds) {
+    throw new PersonalPairingValidationError("pairing proof timestamp is outside the accepted window");
+  }
+
+  if (!/^[A-Za-z0-9_-]{80,100}$/.test(proof.signature)) {
+    throw new PersonalPairingValidationError("pairing proof signature is invalid");
+  }
+  let signature: Buffer;
+  try {
+    signature = Buffer.from(proof.signature, "base64url");
+  } catch {
+    throw new PersonalPairingValidationError("pairing proof signature is invalid");
+  }
+  if (signature.length !== 64) {
+    throw new PersonalPairingValidationError("pairing proof signature is invalid");
+  }
+
+  const payload = buildPersonalPairingSigningPayload({
+    externalAgentId: agent.externalAgentId,
+    ...(agent.displayName ? { displayName: agent.displayName } : {}),
+    keyId: agent.keyId,
+    publicKeyFingerprint: agent.publicKeyFingerprint,
+    timestamp: proof.timestamp,
+    nonce,
+  });
+  if (!verifyEd25519(payload, signature, agent.publicKey)) {
+    throw new PersonalPairingValidationError("pairing proof signature is invalid");
+  }
+  return hashSecret(nonce);
+}
+
+function normalizedProofNonce(value: string): string {
+  const normalized = value.trim();
+  if (!/^[A-Za-z0-9_-]{16,128}$/.test(normalized)) {
+    throw new PersonalPairingValidationError("pairing proof nonce is invalid");
+  }
+  return normalized;
 }
 
 function sameAgentIdentity(agent: AgentRow, pairing: PairingRow): boolean {
