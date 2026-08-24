@@ -37,7 +37,10 @@ integration("PaymentReconciliationMonitor", () => {
   });
 
   beforeEach(async () => {
-    await pool.query('delete from "PaymentOutcome" where "organizationId" = $1::uuid', [ids.organization]);
+    // The production monitor is deliberately global, so this fixture must own
+    // the global unresolved-payment table state when asserting exact counts.
+    // Integration files run serially through the repository test script.
+    await pool.query('delete from "PaymentOutcome"');
     await pool.query('delete from "AgentMandate" where "id" = $1::uuid', [ids.mandate]);
     await pool.query('delete from "Policy" where "id" = $1::uuid', [ids.policy]);
     await pool.query('delete from "AgentIdentity" where "id" = $1::uuid', [ids.agent]);

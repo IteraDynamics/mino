@@ -50,6 +50,11 @@ const APPROVABLE_LIMIT_REASONS = new Set<DecisionReason>([
   DecisionReason.DAILY_LIMIT_EXCEEDED,
 ]);
 
+const HUMAN_APPROVAL_MODES = new Set<ApprovalMode>([
+  ApprovalMode.OWNER_APPROVAL,
+  ApprovalMode.DUAL_SIGNATURE_SLACK,
+]);
+
 export class PolicyEvaluator implements PolicyEvaluatorContract {
   private readonly generateId: () => UUID;
   private readonly monotonicMicros: () => number;
@@ -335,7 +340,7 @@ export class PolicyEvaluator implements PolicyEvaluatorContract {
       return DecisionVerdict.ALLOW;
     }
 
-    if (mandate.approvalMode === ApprovalMode.DUAL_SIGNATURE_SLACK) {
+    if (HUMAN_APPROVAL_MODES.has(mandate.approvalMode)) {
       return DecisionVerdict.PENDING_HUMAN_APPROVAL;
     }
 
