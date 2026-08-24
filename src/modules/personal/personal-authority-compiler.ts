@@ -130,6 +130,10 @@ function parseMajorUnits(value: string, minorDigits: number, field: string): big
     throw new PersonalAuthorityValidationError(`${field} must be a decimal amount string`);
   }
 
+  const wholeDigits = match[1];
+  if (!wholeDigits) {
+    throw new PersonalAuthorityValidationError(`${field} must be a decimal amount string`);
+  }
   const fraction = match[2] ?? "";
   if (fraction.length > minorDigits) {
     throw new PersonalAuthorityValidationError(
@@ -137,7 +141,7 @@ function parseMajorUnits(value: string, minorDigits: number, field: string): big
     );
   }
 
-  const whole = BigInt(match[1]);
+  const whole = BigInt(wholeDigits);
   const paddedFraction = fraction.padEnd(minorDigits, "0");
   const fractionMinor = paddedFraction.length > 0 ? BigInt(paddedFraction) : 0n;
   const minor = whole * 10n ** BigInt(minorDigits) + fractionMinor;

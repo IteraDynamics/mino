@@ -30,7 +30,11 @@ export interface AdminPolicyInventoryItem {
   readonly approvedMerchantDomains: readonly string[];
   readonly approvedVendorIds: readonly string[];
   readonly restrictedCategories: readonly string[];
-  readonly approvalMode: "AUTO_APPROVE" | "DUAL_SIGNATURE_SLACK" | "HARD_BLOCK";
+  readonly approvalMode:
+    | "AUTO_APPROVE"
+    | "OWNER_APPROVAL"
+    | "DUAL_SIGNATURE_SLACK"
+    | "HARD_BLOCK";
   readonly maxTransactionsPerMinute: number;
   readonly crossMerchantWindowSecs: number;
   readonly maxDistinctMerchants: number;
