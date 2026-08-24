@@ -97,6 +97,11 @@ describe("Personal routes", () => {
         externalAgentId: "openclaw-home",
         keyId: "k1",
         publicKey: "public-key-placeholder",
+        proof: {
+          timestamp: 1_787_585_400,
+          nonce: "pairing-proof-nonce",
+          signature: "a".repeat(86),
+        },
       },
     });
     expect(pairing.statusCode).toBe(201);
