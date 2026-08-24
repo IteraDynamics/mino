@@ -64,6 +64,20 @@ export async function registerPersonalAuthorityRoutes(
     const body = authorityBodySchema.safeParse(request.body);
     if (!params.success || !body.success) return reply.code(400).send({ error: "invalid_request" });
 
+    const velocity = body.data.velocity
+      ? {
+          ...(body.data.velocity.maxTransactionsPerMinute === undefined
+            ? {}
+            : { maxTransactionsPerMinute: body.data.velocity.maxTransactionsPerMinute }),
+          ...(body.data.velocity.crossMerchantWindowSeconds === undefined
+            ? {}
+            : { crossMerchantWindowSeconds: body.data.velocity.crossMerchantWindowSeconds }),
+          ...(body.data.velocity.maxDistinctMerchantsInWindow === undefined
+            ? {}
+            : { maxDistinctMerchantsInWindow: body.data.velocity.maxDistinctMerchantsInWindow }),
+        }
+      : undefined;
+
     try {
       const result = await dependencies.authority.setAuthority(identity, params.data.agentId, {
         currency: body.data.currency,
@@ -72,7 +86,7 @@ export async function registerPersonalAuthorityRoutes(
         allowedMerchantDomains: body.data.allowedMerchantDomains,
         ...(body.data.restrictedCategories ? { restrictedCategories: body.data.restrictedCategories } : {}),
         ...(body.data.overLimitBehavior ? { overLimitBehavior: body.data.overLimitBehavior } : {}),
-        ...(body.data.velocity ? { velocity: body.data.velocity } : {}),
+        ...(velocity ? { velocity } : {}),
       });
       switch (result.outcome) {
         case "CREATED":
