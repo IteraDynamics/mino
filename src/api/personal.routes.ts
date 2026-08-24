@@ -23,6 +23,13 @@ const pairingCreateBodySchema = z
     displayName: z.string().min(1).max(256).optional(),
     keyId: z.string().min(1).max(256),
     publicKey: z.string().min(1).max(16 * 1024),
+    proof: z
+      .object({
+        timestamp: z.number().int().positive(),
+        nonce: z.string().min(16).max(128),
+        signature: z.string().min(80).max(100),
+      })
+      .strict(),
   })
   .strict();
 
@@ -90,6 +97,7 @@ export async function registerPersonalRoutes(
       externalAgentId: parsed.data.externalAgentId,
       keyId: parsed.data.keyId,
       publicKey: parsed.data.publicKey,
+      proof: parsed.data.proof,
       ...(parsed.data.displayName ? { displayName: parsed.data.displayName } : {}),
     };
 
