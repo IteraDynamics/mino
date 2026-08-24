@@ -4,6 +4,7 @@ export type UUID = string;
 
 export enum ApprovalMode {
   AUTO_APPROVE = "AUTO_APPROVE",
+  OWNER_APPROVAL = "OWNER_APPROVAL",
   DUAL_SIGNATURE_SLACK = "DUAL_SIGNATURE_SLACK",
   HARD_BLOCK = "HARD_BLOCK",
 }
@@ -32,7 +33,9 @@ export interface AgentSpendMandate {
 
   /**
    * Escalation behavior for otherwise-approvable spend-limit breaches.
-   * Security/identity/category/velocity failures always fail closed.
+   * OWNER_APPROVAL is the single-principal Personal path. Enterprise dual-signature
+   * approval remains distinct. Security/identity/category/velocity failures always
+   * fail closed regardless of approval mode.
    */
   readonly approvalMode: ApprovalMode;
   readonly velocity: VelocityPolicy;
