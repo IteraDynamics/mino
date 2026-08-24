@@ -66,7 +66,7 @@ jobs:
           npx prisma migrate diff
           --exit-code
           --from-config-datasource
-          --to-schema prisma/schema.prisma
+          --to-schema prisma
 
       - name: Typecheck
         run: npm run typecheck
@@ -90,7 +90,7 @@ jobs:
           docker image inspect mino:ci --format '{{json .Config.Healthcheck}}' | jq -e '.Test | length > 0'
           docker image inspect mino:ci --format '{{json .Config.Env}}' | jq -e 'all(.[]; contains("SECRET") | not)'
           docker run --rm --entrypoint sh mino:ci -ec 'test ! -e /app/node_modules/.bin/prisma && test ! -d /app/prisma'
-          docker run --rm --entrypoint sh mino:migration-ci -ec 'test -x /app/node_modules/.bin/prisma && test -f /app/prisma/migrations/20260815050000_baseline/migration.sql && test -f /app/prisma/migrations/20260815053000_admin_identity_rbac/migration.sql && test -f /app/prisma/migrations/20260815063000_admin_change_audit/migration.sql && test -f /app/prisma/migrations/20260816154500_mandate_issuance_idempotency/migration.sql'
+          docker run --rm --entrypoint sh mino:migration-ci -ec 'test -x /app/node_modules/.bin/prisma && test -f /app/prisma/migrations/20260815050000_baseline/migration.sql && test -f /app/prisma/migrations/20260815053000_admin_identity_rbac/migration.sql && test -f /app/prisma/migrations/20260815063000_admin_change_audit/migration.sql && test -f /app/prisma/migrations/20260816154500_mandate_issuance_idempotency/migration.sql && test -f /app/prisma/migrations/20260820123000_admin_high_risk_governance/migration.sql && test -f /app/prisma/migrations/20260824140000_mino_personal_foundation/migration.sql && test -f /app/prisma/migrations/20260824153000_personal_owner_pairing/migration.sql'
 
       - name: Run migration image with mounted datasource secret
         run: |
