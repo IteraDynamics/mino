@@ -1,8 +1,13 @@
-import { generateKeyPairSync } from "node:crypto";
+import { createHash, generateKeyPairSync, type KeyObject } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
+import { signEd25519 } from "../../src/infrastructure/crypto/ed25519.js";
 import { PgSqlAdapter } from "../../src/infrastructure/postgres/pg-sql-adapter.js";
-import { PostgresPersonalPairingService } from "../../src/modules/personal/personal-pairing.service.js";
+import {
+  buildPersonalPairingSigningPayload,
+  PostgresPersonalPairingService,
+  type PersonalPairingCreateRequest,
+} from "../../src/modules/personal/personal-pairing.service.js";
 
 const integration = process.env.RUN_INTEGRATION_TESTS === "1" ? describe : describe.skip;
 const DATABASE_URL =
@@ -42,7 +47,7 @@ integration("Mino Personal bootstrap and pairing", () => {
     await pool.end();
   });
 
-  it("bootstraps one Personal owner, pairs an Ed25519 agent, and grants no economic authority", async () => {
+  it("bootstraps one Personal owner, proves key possession, pairs the agent, and grants no economic authority", async () => {
     const service = new PostgresPersonalPairingService(new PgSqlAdapter(pool), undefined, () => now);
     const identity = { issuer: ISSUER, subject: "owner-1" };
 
@@ -67,15 +72,17 @@ integration("Mino Personal bootstrap and pairing", () => {
     expect(organization.rows[0]?.kind).toBe("PERSONAL");
 
     const keys = generateKeyPairSync("ed25519");
-    const publicKey = keys.publicKey.export({ type: "spki", format: "pem" }).toString();
-    const pairing = await service.createPairingRequest({
+    const request = signedPairingRequest(keys.publicKey, keys.privateKey, {
       externalAgentId: "openclaw-home",
       displayName: "OpenClaw",
       keyId: "openclaw-k1",
-      publicKey,
+      nonce: "pairing-nonce-owner-1",
     });
+    const pairing = await service.createPairingRequest(request);
     expect(pairing.status).toBe("PENDING");
     expect(pairing.claimSecret.length).toBeGreaterThanOrEqual(32);
+
+    await expect(service.createPairingRequest(request)).rejects.toThrow(/nonce was already used/);
 
     const beforeClaim = await pool.query<{ count: string }>(
       'select count(*)::text as "count" from "AgentIdentity" where "organizationId" = $1::uuid',
@@ -110,6 +117,23 @@ integration("Mino Personal bootstrap and pairing", () => {
     expect(authority.rows[0]).toEqual({ policies: "0", mandates: "0" });
   });
 
+  it("rejects a pairing proof signed by a different private key", async () => {
+    const service = new PostgresPersonalPairingService(new PgSqlAdapter(pool), undefined, () => now);
+    const claimedKeys = generateKeyPairSync("ed25519");
+    const attackerKeys = generateKeyPairSync("ed25519");
+    const request = signedPairingRequest(claimedKeys.publicKey, attackerKeys.privateKey, {
+      externalAgentId: "spoofed-agent",
+      keyId: "spoofed-k1",
+      nonce: "pairing-nonce-spoofed",
+    });
+
+    await expect(service.createPairingRequest(request)).rejects.toThrow(/signature is invalid/);
+    const persisted = await pool.query<{ count: string }>(
+      'select count(*)::text as "count" from "PersonalPairingRequest"',
+    );
+    expect(persisted.rows[0]?.count).toBe("0");
+  });
+
   it("expires an unclaimed pairing and never creates an agent", async () => {
     let clock = new Date(now);
     const service = new PostgresPersonalPairingService(
@@ -124,11 +148,13 @@ integration("Mino Personal bootstrap and pairing", () => {
     if (owner.outcome !== "CREATED") throw new Error("owner bootstrap failed");
 
     const keys = generateKeyPairSync("ed25519");
-    const pairing = await service.createPairingRequest({
-      externalAgentId: "openclaw-expired",
-      keyId: "openclaw-k-expired",
-      publicKey: keys.publicKey.export({ type: "spki", format: "pem" }).toString(),
-    });
+    const pairing = await service.createPairingRequest(
+      signedPairingRequest(keys.publicKey, keys.privateKey, {
+        externalAgentId: "openclaw-expired",
+        keyId: "openclaw-k-expired",
+        nonce: "pairing-nonce-expired",
+      }),
+    );
 
     clock = new Date(now.getTime() + 60_001);
     const result = await service.claimPairingRequest(identity, pairing.id, pairing.claimSecret);
@@ -142,3 +168,39 @@ integration("Mino Personal bootstrap and pairing", () => {
     expect(agents.rows[0]?.count).toBe("0");
   });
 });
+
+function signedPairingRequest(
+  publicKeyObject: KeyObject,
+  signingKey: KeyObject,
+  input: {
+    readonly externalAgentId: string;
+    readonly displayName?: string;
+    readonly keyId: string;
+    readonly nonce: string;
+  },
+): PersonalPairingCreateRequest {
+  const publicKey = publicKeyObject.export({ type: "spki", format: "pem" }).toString();
+  const publicKeyDer = publicKeyObject.export({ type: "spki", format: "der" });
+  const publicKeyFingerprint = createHash("sha256").update(publicKeyDer).digest("base64url");
+  const timestamp = Math.floor(now.getTime() / 1_000);
+  const payload = buildPersonalPairingSigningPayload({
+    externalAgentId: input.externalAgentId,
+    ...(input.displayName ? { displayName: input.displayName } : {}),
+    keyId: input.keyId,
+    publicKeyFingerprint,
+    timestamp,
+    nonce: input.nonce,
+  });
+
+  return {
+    externalAgentId: input.externalAgentId,
+    ...(input.displayName ? { displayName: input.displayName } : {}),
+    keyId: input.keyId,
+    publicKey,
+    proof: {
+      timestamp,
+      nonce: input.nonce,
+      signature: signEd25519(payload, signingKey).toString("base64url"),
+    },
+  };
+}
