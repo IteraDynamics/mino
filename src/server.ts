@@ -29,7 +29,7 @@ let personalSurface: Awaited<ReturnType<typeof registerPersonalProductionSurface
 try {
   personalSurface = await registerPersonalProductionSurface(
     production.app,
-    config.databaseUrl,
+    config,
     personalJwtIssuers,
   );
 } catch (error) {
