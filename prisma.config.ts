@@ -3,7 +3,9 @@ import { readFileSync, realpathSync } from "node:fs";
 import { defineConfig } from "prisma/config";
 
 export default defineConfig({
-  schema: "prisma/schema.prisma",
+  // Prisma 7 supports schema folders. Keep the existing core schema intact and
+  // let Personal add domain models in focused sibling .prisma files.
+  schema: "prisma",
   migrations: {
     path: "prisma/migrations",
   },

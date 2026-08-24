@@ -1,0 +1,57 @@
+enum PersonalOwnerStatus {
+  ACTIVE
+  DISABLED
+}
+
+enum PersonalPairingStatus {
+  PENDING
+  CLAIMED
+  EXPIRED
+}
+
+/// Single-human control identity for a PERSONAL organization.
+///
+/// `User` remains the economic beneficiary. This record exists only to bind an
+/// independently authenticated human identity to the Personal control surface.
+model PersonalOwner {
+  id             String              @id @default(uuid()) @db.Uuid
+  organizationId String              @unique @db.Uuid
+  userId         String              @unique @db.Uuid
+  issuer         String
+  subject        String
+  email          String
+  displayName    String?
+  status         PersonalOwnerStatus @default(ACTIVE)
+  createdAt      DateTime            @default(now()) @db.Timestamptz(6)
+  updatedAt      DateTime            @updatedAt @db.Timestamptz(6)
+
+  @@unique([issuer, subject])
+  @@index([status])
+}
+
+/// Durable, authority-free claim ceremony created by an agent before a human
+/// owner accepts it. The raw claim secret is returned once and never persisted.
+/// The request also stores only a digest of the signed proof nonce so a valid
+/// key-possession proof cannot be replayed into a second pairing ceremony.
+model PersonalPairingRequest {
+  id                    String                @id @default(uuid()) @db.Uuid
+  claimSecretHash       String                @unique
+  proofNonceHash        String                @unique
+  externalAgentId       String
+  displayName           String?
+  keyId                 String
+  publicKey             String
+  publicKeyFingerprint  String
+  status                PersonalPairingStatus @default(PENDING)
+  createdAt             DateTime              @default(now()) @db.Timestamptz(6)
+  updatedAt             DateTime              @updatedAt @db.Timestamptz(6)
+  expiresAt             DateTime              @db.Timestamptz(6)
+  claimedAt             DateTime?             @db.Timestamptz(6)
+  claimedByOwnerId      String?               @db.Uuid
+  claimedOrganizationId String?               @db.Uuid
+  agentId               String?               @unique @db.Uuid
+
+  @@index([status, expiresAt])
+  @@index([claimedByOwnerId, claimedAt])
+  @@index([claimedOrganizationId, claimedAt])
+}

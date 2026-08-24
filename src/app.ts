@@ -51,6 +51,10 @@ import {
   registerMetricsRoute,
   type MetricsRouteDependencies,
 } from "./api/metrics.routes.js";
+import {
+  registerPersonalRoutes,
+  type PersonalRouteDependencies,
+} from "./api/personal.routes.js";
 import type { HumanApprovalService } from "./modules/approvals/durable-approval.service.js";
 import type { ApprovalResolutionAuthenticator } from "./modules/approvals/approval-resolution-authenticator.js";
 import type { CheckoutLifecycleProxyService } from "./modules/proxy/checkout-lifecycle-proxy.service.js";
@@ -61,6 +65,7 @@ export interface CreateAppOptions {
   readonly lifecycleProxy?: CheckoutLifecycleProxyService;
   readonly approvals?: HumanApprovalService;
   readonly approvalAuthenticator?: ApprovalResolutionAuthenticator;
+  readonly personal?: PersonalRouteDependencies;
   readonly adminAccess?: AdminAccessRouteDependencies;
   readonly adminInventory?: AdminInventoryRouteDependencies;
   readonly adminBeneficiaryAdministration?: AdminBeneficiaryAdministrationRouteDependencies;
@@ -101,6 +106,10 @@ export async function createApp(options: CreateAppOptions): Promise<FastifyInsta
       authenticator: options.approvalAuthenticator,
       ...(options.now ? { now: options.now } : {}),
     });
+  }
+
+  if (options.personal) {
+    await registerPersonalRoutes(app, options.personal);
   }
 
   if (options.adminAccess) {

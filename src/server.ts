@@ -3,15 +3,18 @@ import { randomUUID } from "node:crypto";
 import { loadAdminJwtIssuerConfiguration } from "./infrastructure/config/admin-jwt-config.js";
 import { loadAuditCheckpointRetentionConfig } from "./infrastructure/config/audit-checkpoint-retention-config.js";
 import { loadOperationalMetricsConfig } from "./infrastructure/config/operational-metrics-config.js";
+import { loadPersonalJwtIssuerConfiguration } from "./infrastructure/config/personal-jwt-config.js";
 import { loadProductionConfig } from "./infrastructure/config/production-config.js";
 import { WebhookAdminAuditCheckpointRetainer } from "./modules/admin/admin-audit-checkpoint-retention.js";
 import { WebhookAuditCheckpointRetainer } from "./modules/audit/audit-checkpoint-retention.js";
 import { paymentReconciliationNeedsAttention } from "./modules/payments/payment-reconciliation-monitor.js";
 import { createProductionApplication } from "./production/application.js";
 import { NonOverlappingWorkerLoop } from "./production/non-overlapping-worker-loop.js";
+import { registerPersonalProductionSurface } from "./production/personal-surface.js";
 
 const config = loadProductionConfig();
 const adminJwtIssuers = loadAdminJwtIssuerConfiguration();
+const personalJwtIssuers = loadPersonalJwtIssuerConfiguration();
 const auditCheckpointRetentionConfig = loadAuditCheckpointRetentionConfig();
 const operationalMetricsConfig = loadOperationalMetricsConfig();
 const production = await createProductionApplication(config, {
@@ -22,9 +25,22 @@ const production = await createProductionApplication(config, {
   ...(adminJwtIssuers.length > 0 ? { adminJwtIssuers } : {}),
   ...(operationalMetricsConfig ? { operationalMetrics: operationalMetricsConfig } : {}),
 });
+let personalSurface: Awaited<ReturnType<typeof registerPersonalProductionSurface>>;
+try {
+  personalSurface = await registerPersonalProductionSurface(
+    production.app,
+    config.databaseUrl,
+    personalJwtIssuers,
+  );
+} catch (error) {
+  await production.close().catch(() => undefined);
+  throw error;
+}
+
 const auditCheckpointRetention = production.auditCheckpointRetention;
 const adminAuditCheckpointRetention = production.adminAuditCheckpointRetention;
 if (!auditCheckpointRetention || !adminAuditCheckpointRetention) {
+  await personalSurface?.close().catch(() => undefined);
   await production.close();
   throw new Error("Audit checkpoint retention workers were not configured");
 }
@@ -135,6 +151,7 @@ async function shutdown(signal: string): Promise<void> {
       adminAuditCheckpointRetentionLoop.stop(),
     ]);
     await production.close();
+    await personalSurface?.close();
     process.exitCode = 0;
   } catch (error) {
     production.app.log.error({ error }, "Mino shutdown failed");
@@ -167,5 +184,6 @@ try {
     adminAuditCheckpointRetentionLoop.stop(),
   ]).catch(() => undefined);
   await production.close().catch(() => undefined);
+  await personalSurface?.close().catch(() => undefined);
   process.exitCode = 1;
 }
