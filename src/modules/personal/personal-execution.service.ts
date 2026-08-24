@@ -18,20 +18,15 @@ export interface PersonalExecutionSecurity {
   readonly apiVersion: string;
 }
 
-interface PersonalExecutionBaseInput {
+export interface PersonalCompleteCheckoutInput {
   readonly merchantId: string;
+  readonly checkoutSessionId: string;
   readonly requestId: string;
   readonly idempotencyKey: string;
   readonly path: string;
   readonly body: unknown;
   readonly security: PersonalExecutionSecurity;
   readonly now: Date;
-}
-
-export interface PersonalCreateCheckoutInput extends PersonalExecutionBaseInput {}
-
-export interface PersonalCompleteCheckoutInput extends PersonalExecutionBaseInput {
-  readonly checkoutSessionId: string;
 }
 
 export class PersonalExecutionCredentialUnavailableError extends Error {
@@ -42,42 +37,35 @@ export class PersonalExecutionCredentialUnavailableError extends Error {
 }
 
 /**
- * Thin Personal execution adapter around the existing hardened ACP proxy.
+ * Personal guards the economic choke point, not cart/session construction.
  *
- * The agent authenticates only to Mino with its mandate + Ed25519 proof. Mino
- * verifies the mandate cryptographically to resolve the organization, retrieves
- * the upstream merchant credential server-side, then delegates to the existing
- * CheckoutProxyService. CheckoutProxyService remains authoritative for durable
- * mandate binding, agent proof verification, policy evaluation, reservations,
- * approvals, audit, payment outcome handling, and reconciliation semantics.
+ * The agent may build a cart or checkout session through its ordinary merchant
+ * tooling. When it is ready to complete the economic action, it authenticates to
+ * Mino with its bounded mandate + Ed25519 proof. Mino resolves the upstream
+ * execution credential server-side and delegates to the existing hardened
+ * CheckoutProxyService.
+ *
+ * CheckoutProxyService remains authoritative for durable mandate binding,
+ * authoritative cart re-fetch, policy evaluation, reservations, owner approval,
+ * audit, execution, payment-outcome persistence, and reconciliation semantics.
  */
 export class PersonalACPExecutionService {
   public constructor(
     private readonly mandateTokens: Pick<MandateTokenService, "verify">,
-    private readonly proxy: Pick<CheckoutProxyService, "createCheckout" | "completeCheckout">,
+    private readonly proxy: Pick<CheckoutProxyService, "completeCheckout">,
     private readonly credentials: PersonalExecutionCredentialProvider,
   ) {}
 
-  public async createCheckout(input: PersonalCreateCheckoutInput): Promise<CheckoutProxyResult> {
-    const authorization = await this.resolveAuthorization(input);
-    return this.proxy.createCheckout({
-      merchantId: input.merchantId,
-      requestId: input.requestId,
-      idempotencyKey: input.idempotencyKey,
-      path: input.path,
-      body: input.body,
-      security: {
-        mandateToken: input.security.mandateToken,
-        agentProof: input.security.agentProof,
-        apiVersion: input.security.apiVersion,
-        authorization,
-      },
-      now: input.now,
-    });
-  }
-
   public async completeCheckout(input: PersonalCompleteCheckoutInput): Promise<CheckoutProxyResult> {
-    const authorization = await this.resolveAuthorization(input);
+    const verified = await this.mandateTokens.verify(input.security.mandateToken, input.now);
+    const authorization = await this.credentials.getAuthorization(
+      verified.claims.organizationId,
+      input.merchantId,
+    );
+    if (!authorization || !/^Bearer\s+\S+$/i.test(authorization.trim())) {
+      throw new PersonalExecutionCredentialUnavailableError();
+    }
+
     return this.proxy.completeCheckout({
       merchantId: input.merchantId,
       checkoutSessionId: input.checkoutSessionId,
@@ -89,21 +77,9 @@ export class PersonalACPExecutionService {
         mandateToken: input.security.mandateToken,
         agentProof: input.security.agentProof,
         apiVersion: input.security.apiVersion,
-        authorization,
+        authorization: authorization.trim(),
       },
       now: input.now,
     });
-  }
-
-  private async resolveAuthorization(input: PersonalExecutionBaseInput): Promise<string> {
-    const verified = await this.mandateTokens.verify(input.security.mandateToken, input.now);
-    const authorization = await this.credentials.getAuthorization(
-      verified.claims.organizationId,
-      input.merchantId,
-    );
-    if (!authorization || !/^Bearer\s+\S+$/i.test(authorization.trim())) {
-      throw new PersonalExecutionCredentialUnavailableError();
-    }
-    return authorization.trim();
   }
 }
