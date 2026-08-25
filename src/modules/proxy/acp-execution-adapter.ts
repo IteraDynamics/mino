@@ -1,4 +1,6 @@
+import type { AuthorizationDecision } from "../../domain/economic/authorization-decision.js";
 import type { SignedAuthorizationGrant } from "../../domain/economic/authorization-grant.types.js";
+import { bindEconomicIntent } from "../../domain/economic/canonical-economic-intent.js";
 import type { CheckoutIntent } from "../../domain/checkout/checkout.types.js";
 import type { PolicyDecision } from "../../domain/evaluation/evaluation.types.js";
 import type { AuthorizationGrantIssuer } from "../authorization/authorization-grant.service.js";
@@ -24,20 +26,12 @@ export interface ACPExecutionContext {
 
 interface PreparedACPExecution {
   readonly intent: CheckoutIntent;
-  readonly decision: PolicyDecision;
+  readonly decision: AuthorizationDecision;
   readonly grant: SignedAuthorizationGrant;
   readonly delegationAssertion: string;
 }
 
-/**
- * ACP adapter #1 for the provider-neutral execution boundary.
- *
- * The compatibility methods implement the existing CheckoutProxyService ports so
- * PR #34 can move production execution behind this adapter without changing the
- * externally visible ACP HTTP contract. The adapter issues the neutral grant
- * before producing the existing ACP delegation assertion, then requires that
- * prepared authorization when the payment is forwarded.
- */
+/** ACP adapter for the provider-neutral execution boundary. */
 export class ACPExecutionAdapter
   implements
     EconomicExecutionAdapter<ACPExecutionContext, MerchantResponse>,
@@ -55,12 +49,17 @@ export class ACPExecutionAdapter
   ) {}
 
   public issue(intent: CheckoutIntent, decision: PolicyDecision, now: Date): string {
+    if (!("intentDigest" in decision) || typeof decision.intentDigest !== "string") {
+      throw new Error("ACP execution requires an EconomicIntent-bound authorization decision");
+    }
+    const boundDecision = decision as AuthorizationDecision;
+    this.assertDecisionMatchesIntent(intent, boundDecision);
     this.removeExpired(now);
-    const grant = this.grants.issue(intent, decision, now);
+    const grant = this.grants.issue(intent, boundDecision, now);
     const delegationAssertion = this.legacyDelegation.issue(intent, decision, now);
     this.prepared.set(delegationAssertion, {
       intent,
-      decision,
+      decision: boundDecision,
       grant,
       delegationAssertion,
     });
@@ -73,6 +72,7 @@ export class ACPExecutionAdapter
     if (input.intent.protocol !== this.protocol) {
       throw new Error("ACP execution adapter refuses non-ACP economic intent");
     }
+    this.assertDecisionMatchesIntent(input.intent, input.decision);
     this.assertGrantBinding(input.grant, input.intent, input.decision);
 
     return this.client.completeCheckout(
@@ -160,17 +160,35 @@ export class ACPExecutionAdapter
     return this.client.cancelCheckout(merchant, checkoutSessionId, headers, payload);
   }
 
+  private assertDecisionMatchesIntent(
+    intent: CheckoutIntent,
+    decision: AuthorizationDecision,
+  ): void {
+    const rebound = bindEconomicIntent(intent, {
+      organizationId: intent.organizationId,
+      userId: intent.userId,
+      agentId: intent.agentId,
+      mandateId: decision.mandateId,
+      policyId: decision.policyId,
+      policyVersion: decision.policyVersion,
+    });
+    if (rebound.intentDigest !== decision.intentDigest) {
+      throw new Error("Authorization decision does not bind to the requested EconomicIntent");
+    }
+  }
+
   private assertGrantBinding(
     grant: SignedAuthorizationGrant,
     intent: CheckoutIntent,
-    decision: PolicyDecision,
+    decision: AuthorizationDecision,
   ): void {
     if (
       grant.claims.request_id !== intent.requestId ||
       grant.claims.decision_id !== decision.decisionId ||
       grant.claims.mandate_id !== decision.mandateId ||
       grant.claims.operation !== intent.operation ||
-      grant.claims.agent_id !== intent.agentId
+      grant.claims.agent_id !== intent.agentId ||
+      grant.claims.intent_digest !== decision.intentDigest
     ) {
       throw new Error("Authorization grant does not bind to the requested ACP execution");
     }

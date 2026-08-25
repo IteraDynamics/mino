@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
+import type { AuthorizationDecision } from "../../src/domain/economic/authorization-decision.js";
 import type { SignedAuthorizationGrant } from "../../src/domain/economic/authorization-grant.types.js";
 import type { EconomicIntent } from "../../src/domain/economic/economic-intent.types.js";
-import { DecisionVerdict, type PolicyDecision } from "../../src/domain/evaluation/evaluation.types.js";
+import { DecisionVerdict } from "../../src/domain/evaluation/evaluation.types.js";
 import { StripeExecutionAdapter } from "../../src/modules/providers/stripe/stripe-execution-adapter.js";
 import type {
   StripePaymentIntentClient,
@@ -9,6 +10,7 @@ import type {
 } from "../../src/modules/providers/stripe/stripe-payment-intent-client.js";
 
 const NOW = new Date("2026-08-19T20:00:00.000Z");
+const INTENT_DIGEST = "S".repeat(43);
 
 function intent(protocol: EconomicIntent["protocol"] = "STRIPE"): EconomicIntent {
   return {
@@ -42,7 +44,7 @@ function intent(protocol: EconomicIntent["protocol"] = "STRIPE"): EconomicIntent
   };
 }
 
-function decision(): PolicyDecision {
+function decision(intentDigest = INTENT_DIGEST): AuthorizationDecision {
   return {
     decisionId: "decision-37",
     requestId: "request-37",
@@ -54,13 +56,14 @@ function decision(): PolicyDecision {
     mandateId: "mandate-37",
     policyId: "policy-37",
     policyVersion: 1,
+    intentDigest,
     eligibleForDelegationAssertion: true,
     evaluationLatencyMicros: 10,
     evaluatedAt: NOW,
   };
 }
 
-function grant(args: { accountId?: string; amountMinor?: string } = {}): SignedAuthorizationGrant {
+function grant(args: { accountId?: string; amountMinor?: string; intentDigest?: string } = {}): SignedAuthorizationGrant {
   return {
     token: "header.payload.signature",
     claims: {
@@ -93,7 +96,7 @@ function grant(args: { accountId?: string; amountMinor?: string } = {}): SignedA
       amount_minor: args.amountMinor ?? "5000",
       currency: "USD",
       idempotency_digest: "idem-digest",
-      intent_digest: "intent-digest",
+      intent_digest: args.intentDigest ?? INTENT_DIGEST,
     },
   };
 }
@@ -194,6 +197,25 @@ describe("StripeExecutionAdapter", () => {
         },
       }),
     ).rejects.toThrowError("Authorization grant does not bind the Stripe connected account");
+    expect(h.state().retrieves).toBe(0);
+  });
+
+  it("refuses a grant bound to a different EconomicIntent digest", async () => {
+    const h = harness();
+
+    await expect(
+      h.adapter.execute({
+        intent: intent(),
+        decision: decision(),
+        grant: grant({ intentDigest: "T".repeat(43) }),
+        now: NOW,
+        context: {
+          authorization: "Bearer sk_test_example",
+          accountId: "acct_123",
+          paymentIntentId: "pi_test37",
+        },
+      }),
+    ).rejects.toThrowError("Authorization grant does not bind to the requested Stripe execution");
     expect(h.state().retrieves).toBe(0);
   });
 

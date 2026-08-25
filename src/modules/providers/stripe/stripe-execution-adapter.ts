@@ -1,6 +1,6 @@
+import type { AuthorizationDecision } from "../../../domain/economic/authorization-decision.js";
 import type { SignedAuthorizationGrant } from "../../../domain/economic/authorization-grant.types.js";
 import type { EconomicIntent } from "../../../domain/economic/economic-intent.types.js";
-import type { PolicyDecision } from "../../../domain/evaluation/evaluation.types.js";
 import type {
   EconomicExecutionAdapter,
   EconomicExecutionInput,
@@ -24,11 +24,9 @@ export interface StripeExecutionContext {
 
 /**
  * Second-provider proof for Mino's neutral execution boundary.
- *
- * Stripe is deliberately modeled as a different execution shape from ACP: an
- * existing PaymentIntent is first read and bound to Mino's signed grant, then
- * confirmed on a specific connected account. Provider credentials, object IDs,
- * and HTTP semantics remain inside this adapter.
+ * Stripe remains a compatibility provider in this PR: it consumes the same
+ * intent-bound AuthorizationDecision/ExecutionGrant lifecycle, while full
+ * authoritative Stripe-to-canonical-intent normalization is a later adapter test.
  */
 export class StripeExecutionAdapter
   implements EconomicExecutionAdapter<StripeExecutionContext, StripeProviderResponse>
@@ -78,7 +76,7 @@ export class StripeExecutionAdapter
   private assertGrantBinding(
     grant: SignedAuthorizationGrant,
     intent: EconomicIntent,
-    decision: PolicyDecision,
+    decision: AuthorizationDecision,
     context: StripeExecutionContext,
     now: Date,
   ): void {
@@ -91,6 +89,7 @@ export class StripeExecutionAdapter
       grant.claims.mandate_id !== decision.mandateId ||
       grant.claims.operation !== intent.operation ||
       grant.claims.agent_id !== intent.agentId ||
+      grant.claims.intent_digest !== decision.intentDigest ||
       grant.claims.amount_minor !== decision.approvedAmount.minorUnits.toString(10) ||
       grant.claims.currency !== decision.approvedAmount.currency
     ) {

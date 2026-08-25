@@ -12,7 +12,8 @@ export type {
 
 /**
  * Execution/provider provenance for an intent. Policy meaning must not branch on
- * this field; adapters may preserve it for evidence and downstream protocol work.
+ * this field; adapters preserve it only for authoritative-state normalization,
+ * evidence, and downstream protocol work.
  */
 export type EconomicProviderProtocol = "ACP" | "STRIPE" | "CUSTOM";
 
@@ -39,6 +40,7 @@ export interface EconomicLineItem {
 }
 
 interface EconomicIntentBase {
+  /** Per-attempt transport/audit provenance. This must not define intent identity. */
   readonly requestId: UUID;
   readonly protocol: EconomicProviderProtocol;
   readonly operation: EconomicOperation;
@@ -51,6 +53,14 @@ interface EconomicIntentBase {
   readonly shipping?: Money;
   readonly total: Money;
   readonly idempotencyKey: string;
+  /**
+   * Digest of the stable provider-authoritative state projection used by the adapter.
+   * Production execution canonicalization requires this value. It remains optional
+   * here temporarily so evaluator/unit fixtures that construct normalized intents
+   * directly can migrate without conflating test provenance with trusted provider state.
+   */
+  readonly authoritativeStateDigest?: string;
+  /** Provider payload retained only as provenance/evidence. Core authorization must not trust it directly. */
   readonly rawPayload: unknown;
 }
 
@@ -60,9 +70,8 @@ interface EconomicIntentBase {
  *
  * New provider adapters should supply `counterparty`. The existing ACP adapter emits
  * both representations from one source so downstream ACP-only evidence and request
- * binding remain byte-for-byte compatible while the authorization core moves to the
- * generalized identity. When both are present, policy evaluation requires them to
- * agree and fails closed on ambiguity.
+ * binding remain compatible while the authorization core moves to generalized identity.
+ * When both are present, policy evaluation requires them to agree and fails closed.
  */
 export type EconomicCounterpartyBinding =
   | {
@@ -75,11 +84,11 @@ export type EconomicCounterpartyBinding =
     };
 
 /**
- * Canonical provider-neutral input to Mino's economic authorization semantics.
+ * Provider-normalized economic state consumed by policy evaluation and then elevated
+ * into the immutable canonical EconomicIntent binding before approval/execution.
  *
- * `protocol` and `rawPayload` are provenance only. The policy evaluator derives
- * authorization meaning from normalized identities, counterparty scope, categories,
- * amounts, spend/velocity state, and mandate controls. Equivalent normalized intents
- * must therefore evaluate equivalently regardless of execution provider.
+ * Safety invariant: Mino Core does not trust an agent's description of the economic
+ * consequence. Production adapters derive these normalized facts from authoritative
+ * provider state; canonical binding validates the authority reference and source digest.
  */
 export type EconomicIntent = EconomicIntentBase & EconomicCounterpartyBinding;

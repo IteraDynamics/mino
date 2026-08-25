@@ -1,9 +1,9 @@
 import type { Ed25519KeyInput } from "../../infrastructure/crypto/ed25519.js";
 import { signEd25519 } from "../../infrastructure/crypto/ed25519.js";
-import { canonicalJson, sha256Base64Url } from "../../infrastructure/crypto/canonical-json.js";
+import { sha256Base64Url } from "../../infrastructure/crypto/canonical-json.js";
 import { resolveEconomicCounterparty } from "../../domain/economic/counterparty-identity.js";
+import type { AuthorizationDecision } from "../../domain/economic/authorization-decision.js";
 import type { EconomicIntent } from "../../domain/economic/economic-intent.types.js";
-import type { PolicyDecision } from "../../domain/evaluation/evaluation.types.js";
 import type {
   AuthorizationGrantClaims,
   SignedAuthorizationGrant,
@@ -27,7 +27,7 @@ interface AuthorizationGrantHeader {
 }
 
 export interface AuthorizationGrantIssuer {
-  issue(intent: EconomicIntent, decision: PolicyDecision, now: Date): SignedAuthorizationGrant;
+  issue(intent: EconomicIntent, decision: AuthorizationDecision, now: Date): SignedAuthorizationGrant;
 }
 
 export class AuthorizationGrantService implements AuthorizationGrantIssuer {
@@ -41,7 +41,11 @@ export class AuthorizationGrantService implements AuthorizationGrantIssuer {
     this.ttlSeconds = options.ttlSeconds ?? 45;
   }
 
-  public issue(intent: EconomicIntent, decision: PolicyDecision, now: Date): SignedAuthorizationGrant {
+  public issue(
+    intent: EconomicIntent,
+    decision: AuthorizationDecision,
+    now: Date,
+  ): SignedAuthorizationGrant {
     if (!decision.eligibleForDelegationAssertion || !decision.approvedAmount) {
       throw new Error("Authorization grants can only be issued for allowed decisions");
     }
@@ -72,7 +76,7 @@ export class AuthorizationGrantService implements AuthorizationGrantIssuer {
       amount_minor: decision.approvedAmount.minorUnits.toString(10),
       currency: decision.approvedAmount.currency,
       idempotency_digest: sha256Base64Url(intent.idempotencyKey),
-      intent_digest: sha256Base64Url(canonicalJson(providerNeutralIntentBinding(intent, counterparty))),
+      intent_digest: decision.intentDigest,
     };
 
     const header: AuthorizationGrantHeader = {
@@ -91,21 +95,4 @@ export class AuthorizationGrantService implements AuthorizationGrantIssuer {
       claims,
     };
   }
-}
-
-function providerNeutralIntentBinding(intent: EconomicIntent, counterparty: NonNullable<ReturnType<typeof resolveEconomicCounterparty>>) {
-  return {
-    requestId: intent.requestId,
-    operation: intent.operation,
-    organizationId: intent.organizationId,
-    userId: intent.userId,
-    agentId: intent.agentId,
-    counterparty,
-    cart: intent.cart,
-    subtotal: intent.subtotal,
-    tax: intent.tax,
-    shipping: intent.shipping,
-    total: intent.total,
-    idempotencyKey: intent.idempotencyKey,
-  };
 }
