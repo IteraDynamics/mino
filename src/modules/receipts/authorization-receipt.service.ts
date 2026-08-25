@@ -192,7 +192,7 @@ export class PostgresAuthorizationReceiptService
       },
       decision: {
         decisionId: authorization.decisionId,
-        verdict: "ALLOW",
+        verdict: "ALLOW" as const,
         reasonCodes: [...authorization.reasonCodes],
         evaluatedAt: decision.evaluatedAt,
       },
