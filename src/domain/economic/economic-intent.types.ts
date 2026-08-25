@@ -17,16 +17,13 @@ export type {
  */
 export type EconomicProviderProtocol = "ACP" | "STRIPE" | "CUSTOM";
 
-/**
- * Provider-neutral economic operation understood by Mino's authorization core.
- * Names remain checkout-oriented while the transaction surface is migrated
- * incrementally; operation meaning is independent of the execution provider.
- */
+/** Provider-neutral economic operations. Operation semantics may differ; provider semantics may not leak into Core. */
 export type EconomicOperation =
   | "CREATE_CHECKOUT_SESSION"
   | "UPDATE_CHECKOUT_SESSION"
   | "COMPLETE_CHECKOUT"
-  | "AUTHORIZE_PAYMENT";
+  | "AUTHORIZE_PAYMENT"
+  | "PAY_INVOICE";
 
 export interface EconomicLineItem {
   readonly lineId: string;
@@ -39,6 +36,16 @@ export interface EconomicLineItem {
   readonly totalPrice: Money;
 }
 
+/**
+ * Provider-neutral economic value. An action may transfer value without having a
+ * shopping cart; line items therefore describe optional economic components rather
+ * than defining the existence of an economic consequence.
+ */
+export interface EconomicValue {
+  readonly amount: Money;
+  readonly items?: readonly EconomicLineItem[];
+}
+
 interface EconomicIntentBase {
   /** Per-attempt transport/audit provenance. This must not define intent identity. */
   readonly requestId: UUID;
@@ -47,11 +54,6 @@ interface EconomicIntentBase {
   readonly organizationId: UUID;
   readonly userId: UUID;
   readonly agentId: UUID;
-  readonly cart: readonly EconomicLineItem[];
-  readonly subtotal: Money;
-  readonly tax?: Money;
-  readonly shipping?: Money;
-  readonly total: Money;
   readonly idempotencyKey: string;
   /**
    * Digest of the stable provider-authoritative state projection used by the adapter.
@@ -63,6 +65,28 @@ interface EconomicIntentBase {
   /** Provider payload retained only as provenance/evidence. Core authorization must not trust it directly. */
   readonly rawPayload: unknown;
 }
+
+/** Existing checkout economics retained as a compatibility representation. */
+export type LegacyCheckoutEconomics = {
+  readonly economicValue?: undefined;
+  readonly cart: readonly EconomicLineItem[];
+  readonly subtotal: Money;
+  readonly tax?: Money;
+  readonly shipping?: Money;
+  readonly total: Money;
+};
+
+/** New rails should use this representation rather than inventing fake carts/subtotals. */
+export type ProviderNeutralEconomics = {
+  readonly economicValue: EconomicValue;
+  readonly cart?: undefined;
+  readonly subtotal?: undefined;
+  readonly tax?: undefined;
+  readonly shipping?: undefined;
+  readonly total?: undefined;
+};
+
+export type EconomicValueBinding = LegacyCheckoutEconomics | ProviderNeutralEconomics;
 
 /**
  * Canonical provider-neutral recipient identity plus a temporary compatibility
@@ -91,4 +115,30 @@ export type EconomicCounterpartyBinding =
  * consequence. Production adapters derive these normalized facts from authoritative
  * provider state; canonical binding validates the authority reference and source digest.
  */
-export type EconomicIntent = EconomicIntentBase & EconomicCounterpartyBinding;
+export type EconomicIntent = EconomicIntentBase & EconomicCounterpartyBinding & EconomicValueBinding;
+
+/** Core policy/execution code reads value through these helpers rather than checkout aliases. */
+export function economicAmount(intent: EconomicIntent): Money {
+  return intent.economicValue ? intent.economicValue.amount : intent.total;
+}
+
+export function economicItems(intent: EconomicIntent): readonly EconomicLineItem[] {
+  return intent.economicValue?.items ?? intent.cart;
+}
+
+export function checkoutEconomicBreakdown(
+  intent: EconomicIntent,
+):
+  | {
+      readonly subtotal: Money;
+      readonly tax?: Money;
+      readonly shipping?: Money;
+    }
+  | undefined {
+  if (intent.economicValue) return undefined;
+  return {
+    subtotal: intent.subtotal,
+    ...(intent.tax ? { tax: intent.tax } : {}),
+    ...(intent.shipping ? { shipping: intent.shipping } : {}),
+  };
+}
