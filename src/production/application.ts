@@ -61,6 +61,7 @@ import {
   FetchACPMerchantClient,
   type ACPMerchantClient,
 } from "../modules/proxy/merchant-client.js";
+import { PostgresAuthorizationReceiptService } from "../modules/receipts/authorization-receipt.service.js";
 import { AuthorizationReservationService } from "../modules/spending/authorization-reservation.service.js";
 import {
   ReconstructingAuthorizationReservations,
@@ -217,6 +218,11 @@ export async function createProductionApplication(
     );
     const audit = new PostgresAuditLedger(sql, auditKeys);
     const auditVerifier = new PostgresAuditVerifier(sql, auditKeys);
+    const authorizationReceipts = new PostgresAuthorizationReceiptService(
+      sql,
+      auditKeys,
+      generateId,
+    );
     const adminAudit = new PostgresAdminChangeAuditLedger(sql, auditKeys);
     const adminBeneficiaryAdministration = new PostgresAdminBeneficiaryAdministrationService(
       sql,
@@ -358,6 +364,7 @@ export async function createProductionApplication(
       ...(lifecycleProxy ? { lifecycleProxy } : {}),
       approvals,
       approvalAuthenticator,
+      receipts: authorizationReceipts,
       ...(adminAccess
         ? {
             adminAccess,
@@ -452,6 +459,7 @@ export async function createProductionApplication(
       merchantClient,
       credentials: new StaticMerchantCredentialProvider(config.merchantCredentials),
       generateRequestId: generateId,
+      receipts: authorizationReceipts,
     });
     const reconciliationMonitor = new PaymentReconciliationMonitor(sql);
 
