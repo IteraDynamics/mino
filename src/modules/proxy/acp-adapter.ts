@@ -1,5 +1,5 @@
+import type { CheckoutIntent } from "../../domain/checkout/checkout.types.js";
 import type {
-  EconomicIntent,
   EconomicMerchantIdentity,
   EconomicOperation,
 } from "../../domain/economic/economic-intent.types.js";
@@ -54,11 +54,11 @@ export interface NormalizeACPCheckoutInput {
 
 /**
  * ACP is an edge adapter: it validates provider-specific merchant state and emits
- * provider-normalized economic facts. Mino later binds those facts to delegated
- * authority to form the canonical immutable EconomicIntent.
+ * the checkout-shaped member of EconomicIntent. That provider specificity stops
+ * at this adapter boundary; Mino Core consumes the generalized union.
  */
 export class ACPAdapter {
-  public normalizeCheckoutSession(input: NormalizeACPCheckoutInput): EconomicIntent {
+  public normalizeCheckoutSession(input: NormalizeACPCheckoutInput): CheckoutIntent {
     const session = parseCheckoutSession(input.session);
     const currency = session.currency.trim().toUpperCase();
     const total = requiredTotal(session.totals, "total");
@@ -178,28 +178,26 @@ function parseLineItem(value: unknown): ACPLineItem {
   }
 
   const itemId = requireString(value.item.id, "line item item.id");
-  const itemUnitAmount = optionalSafeMinorUnit(value.item.unit_amount, "item.unit_amount");
-  const lineUnitAmount = optionalSafeMinorUnit(value.unit_amount, "line item unit_amount");
-  if (itemUnitAmount === undefined && lineUnitAmount === undefined) {
-    throw new ACPProtocolError("ACP line item must expose an authoritative unit_amount");
-  }
-
   return {
     ...value,
     id: requireString(value.id, "line item id"),
     item: {
       ...value.item,
       id: itemId,
-      ...(typeof value.item.name === "string" ? { name: value.item.name } : {}),
-      ...(itemUnitAmount !== undefined ? { unit_amount: itemUnitAmount } : {}),
+      ...(optionalString(value.item.name) ? { name: optionalString(value.item.name) } : {}),
+      ...(value.item.unit_amount !== undefined
+        ? { unit_amount: requireSafeMinorUnit(value.item.unit_amount, "line item item.unit_amount") }
+        : {}),
     },
     quantity: quantity as number,
-    ...(typeof value.name === "string" ? { name: value.name } : {}),
-    ...(typeof value.description === "string" ? { description: value.description } : {}),
-    ...(lineUnitAmount !== undefined ? { unit_amount: lineUnitAmount } : {}),
-    ...(typeof value.product_id === "string" ? { product_id: value.product_id } : {}),
-    ...(typeof value.sku === "string" ? { sku: value.sku } : {}),
-    ...(typeof value.category === "string" ? { category: value.category } : {}),
+    ...(optionalString(value.name) ? { name: optionalString(value.name) } : {}),
+    ...(optionalString(value.description) ? { description: optionalString(value.description) } : {}),
+    ...(value.unit_amount !== undefined
+      ? { unit_amount: requireSafeMinorUnit(value.unit_amount, "line item unit_amount") }
+      : {}),
+    ...(optionalString(value.product_id) ? { product_id: optionalString(value.product_id) } : {}),
+    ...(optionalString(value.sku) ? { sku: optionalString(value.sku) } : {}),
+    ...(optionalString(value.category) ? { category: optionalString(value.category) } : {}),
     ...(Array.isArray(value.totals) ? { totals: value.totals.map(parseTotal) } : {}),
   } as ACPLineItem;
 }
@@ -211,66 +209,54 @@ function parseTotal(value: unknown): ACPTotal {
   return {
     type: requireString(value.type, "total type"),
     amount: requireSafeMinorUnit(value.amount, "total amount"),
-    ...(typeof value.display_text === "string" ? { display_text: value.display_text } : {}),
+    ...(optionalString(value.display_text) ? { display_text: optionalString(value.display_text) } : {}),
   };
 }
 
 function requiredTotal(totals: readonly ACPTotal[], type: string): number {
-  const total = optionalTotal(totals, type);
-  if (total === undefined) {
+  const value = optionalTotal(totals, type);
+  if (value === undefined) {
     throw new ACPProtocolError(`ACP checkout session is missing ${type} total`);
   }
-  return total;
+  return value;
 }
 
 function optionalTotal(totals: readonly ACPTotal[], type: string): number | undefined {
-  const normalized = type.toLowerCase();
-  const matches = totals.filter((entry) => entry.type.trim().toLowerCase() === normalized);
-  if (matches.length > 1) {
-    throw new ACPProtocolError(`ACP checkout session contains duplicate ${type} totals`);
-  }
-  return matches[0]?.amount;
+  return totals.find((total) => total.type.trim().toLowerCase() === type)?.amount;
 }
 
-function sumLineSubtotals(lineItems: readonly ACPLineItem[]): number {
+function sumLineSubtotals(lines: readonly ACPLineItem[]): number {
   let total = 0;
-  for (const line of lineItems) {
+  for (const line of lines) {
     const unitAmount = requireSafeMinorUnit(line.unit_amount ?? line.item.unit_amount, "line item unit_amount");
-    const lineSubtotal = optionalTotal(line.totals ?? [], "subtotal") ?? unitAmount * line.quantity;
-    if (!Number.isSafeInteger(lineSubtotal) || lineSubtotal < 0) {
-      throw new ACPProtocolError("ACP calculated line subtotal is outside safe integer range");
+    const lineTotal = optionalTotal(line.totals ?? [], "subtotal") ?? unitAmount * line.quantity;
+    if (!Number.isSafeInteger(lineTotal) || lineTotal < 0) {
+      throw new ACPProtocolError("ACP line subtotal must be a non-negative safe integer");
     }
-    total += lineSubtotal;
+    total += lineTotal;
     if (!Number.isSafeInteger(total)) {
-      throw new ACPProtocolError("ACP calculated subtotal is outside safe integer range");
+      throw new ACPProtocolError("ACP subtotal exceeds safe integer range");
     }
   }
   return total;
 }
 
-function requireSafeMinorUnit(value: unknown, field: string): number {
-  const parsed = optionalSafeMinorUnit(value, field);
-  if (parsed === undefined) {
-    throw new ACPProtocolError(`ACP ${field} is required`);
-  }
-  return parsed;
-}
-
-function optionalSafeMinorUnit(value: unknown, field: string): number | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
+function requireSafeMinorUnit(value: unknown, label: string): number {
   if (!Number.isSafeInteger(value) || (value as number) < 0) {
-    throw new ACPProtocolError(`ACP ${field} must be a non-negative safe integer`);
+    throw new ACPProtocolError(`${label} must be a non-negative safe integer`);
   }
   return value as number;
 }
 
-function requireString(value: unknown, field: string): string {
+function requireString(value: unknown, label: string): string {
   if (typeof value !== "string" || value.trim().length === 0) {
-    throw new ACPProtocolError(`ACP ${field} must be a non-empty string`);
+    throw new ACPProtocolError(`ACP ${label} must be a non-empty string`);
   }
   return value;
+}
+
+function optionalString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value : undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
