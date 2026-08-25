@@ -2,6 +2,7 @@ import { generateKeyPairSync } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import type { AuthorizationDecision } from "../../src/domain/economic/authorization-decision.js";
 import type { EconomicIntent } from "../../src/domain/economic/economic-intent.types.js";
 import { DecisionVerdict, type PolicyDecision } from "../../src/domain/evaluation/evaluation.types.js";
 import { ApprovalMode, type AgentSpendMandate } from "../../src/domain/mandates/mandate.types.js";
@@ -92,7 +93,7 @@ function evaluate(economicIntent: EconomicIntent): PolicyDecision {
   });
 }
 
-function allowedDecision(): PolicyDecision {
+function allowedDecision(intentDigest: string): AuthorizationDecision {
   return {
     decisionId: "decision-1",
     requestId: "request-1",
@@ -104,6 +105,7 @@ function allowedDecision(): PolicyDecision {
     mandateId: "mandate-1",
     policyId: "policy-1",
     policyVersion: 3,
+    intentDigest,
     eligibleForDelegationAssertion: true,
     evaluationLatencyMicros: 25,
     evaluatedAt: NOW,
@@ -140,7 +142,7 @@ describe("provider-independence invariants", () => {
     expect(materiallyDifferent.verdict).toBe(DecisionVerdict.BLOCK);
   });
 
-  it("produces the identical signed authorization grant when only provider provenance changes", () => {
+  it("keeps the grant format provider-neutral while preserving canonical intent identity", () => {
     const { privateKey } = generateKeyPairSync("ed25519");
     const issuer = new AuthorizationGrantService(
       { keyId: "grant-k1", privateKey },
@@ -150,17 +152,19 @@ describe("provider-independence invariants", () => {
 
     const acp = issuer.issue(
       intent("ACP", { checkout_session_id: "cs_1", provider_secret: "never-bind-me" }),
-      allowedDecision(),
+      allowedDecision("A".repeat(43)),
       NOW,
     );
     const stripe = issuer.issue(
       intent("STRIPE", { payment_intent: "pi_1", provider_secret: "also-never-bind-me" }),
-      allowedDecision(),
+      allowedDecision("B".repeat(43)),
       NOW,
     );
 
-    expect(stripe.claims).toEqual(acp.claims);
-    expect(stripe.token).toBe(acp.token);
+    expect(acp.claims.counterparty).toEqual(stripe.claims.counterparty);
+    expect(acp.claims.amount_minor).toBe(stripe.claims.amount_minor);
+    expect(acp.claims.intent_digest).not.toBe(stripe.claims.intent_digest);
+    expect(acp.token).not.toBe(stripe.token);
   });
 
   it("keeps provider implementations out of the neutral policy, grant, and adapter contracts", () => {
