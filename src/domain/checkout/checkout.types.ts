@@ -5,18 +5,20 @@ import type {
   EconomicMerchantIdentity,
   EconomicOperation,
   EconomicProviderProtocol,
+  LegacyCheckoutEconomics,
 } from "../economic/economic-intent.types.js";
 
 /**
  * Compatibility aliases for the ACP/checkout-facing surface.
  *
- * Mino's authorization core speaks EconomicIntent. These aliases preserve the
- * existing checkout API and internal call sites while provider-specific adapters
- * migrate to provider-neutral economic and counterparty boundaries incrementally.
+ * Mino's authorization core speaks the generalized EconomicIntent union. ACP
+ * callers explicitly use the legacy checkout economics member so checkout-only
+ * code keeps strong `cart/subtotal/total` types without forcing those aliases
+ * onto non-checkout economic rails.
  */
 export type CommerceProtocol = EconomicProviderProtocol;
 export type CheckoutOperation = EconomicOperation;
 export type CounterpartyIdentity = EconomicCounterpartyIdentity;
 export type MerchantIdentity = EconomicMerchantIdentity;
 export type CartLine = EconomicLineItem;
-export type CheckoutIntent = EconomicIntent;
+export type CheckoutIntent = Extract<EconomicIntent, LegacyCheckoutEconomics>;
