@@ -59,12 +59,14 @@ import type { HumanApprovalService } from "./modules/approvals/durable-approval.
 import type { ApprovalResolutionAuthenticator } from "./modules/approvals/approval-resolution-authenticator.js";
 import type { CheckoutLifecycleProxyService } from "./modules/proxy/checkout-lifecycle-proxy.service.js";
 import type { CheckoutProxyService } from "./modules/proxy/checkout-proxy.service.js";
+import type { AuthorizationReceiptIssuer } from "./modules/receipts/authorization-receipt.service.js";
 
 export interface CreateAppOptions {
   readonly proxy: CheckoutProxyService;
   readonly lifecycleProxy?: CheckoutLifecycleProxyService;
   readonly approvals?: HumanApprovalService;
   readonly approvalAuthenticator?: ApprovalResolutionAuthenticator;
+  readonly receipts?: AuthorizationReceiptIssuer;
   readonly personal?: PersonalRouteDependencies;
   readonly adminAccess?: AdminAccessRouteDependencies;
   readonly adminInventory?: AdminInventoryRouteDependencies;
@@ -85,6 +87,7 @@ export interface CreateAppOptions {
 export interface AppRuntimeDependencies {
   readonly proxy: CheckoutProxyService;
   readonly approvals?: HumanApprovalService;
+  readonly receipts?: AuthorizationReceiptIssuer;
 }
 
 const appRuntimeDependencies = new WeakMap<FastifyInstance, AppRuntimeDependencies>();
@@ -107,11 +110,13 @@ export async function createApp(options: CreateAppOptions): Promise<FastifyInsta
   appRuntimeDependencies.set(app, {
     proxy: options.proxy,
     ...(options.approvals ? { approvals: options.approvals } : {}),
+    ...(options.receipts ? { receipts: options.receipts } : {}),
   });
 
   app.get("/healthz", async () => ({ status: "ok" }));
   await registerACPRoutes(app, {
     proxy: options.proxy,
+    ...(options.receipts ? { receipts: options.receipts } : {}),
     ...(options.now ? { now: options.now } : {}),
   });
   if (options.lifecycleProxy) {
