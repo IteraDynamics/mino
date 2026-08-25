@@ -57,6 +57,9 @@ export class MemoryHumanApprovalService implements HumanApprovalService {
       status: ApprovalRequestStatus.PENDING,
       requiredSignatures:
         input.decision.approval.approvalMode === "DUAL_SIGNATURE_SLACK" ? 2 : 1,
+      ...(input.decision.intentDigest
+        ? { approvalData: { intentDigest: input.decision.intentDigest } }
+        : {}),
       createdAt: input.now,
       expiresAt: input.decision.approval.expiresAt,
       votes: [],
