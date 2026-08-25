@@ -1,5 +1,5 @@
 CREATE TABLE "AuthorizationReceipt" (
-  "id" UUID NOT NULL DEFAULT gen_random_uuid(),
+  "id" UUID NOT NULL,
   "paymentOutcomeId" UUID NOT NULL,
   "organizationId" UUID NOT NULL,
   "userId" UUID NOT NULL,
