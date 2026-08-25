@@ -22,16 +22,6 @@ export interface PaymentOutcomeRecord {
   readonly reservationId: string;
   readonly idempotencyKey: string;
   readonly requestDigest: string;
-  readonly intentDigest?: string;
-  readonly authoritativeStateDigest?: string;
-  readonly decisionId?: string;
-  readonly policyId?: string;
-  readonly policyVersion?: number;
-  readonly decisionReasonCodes: readonly string[];
-  readonly decisionEvaluatedAt?: Date;
-  readonly protocol?: string;
-  readonly operation?: string;
-  readonly approvalRequestId?: string;
   readonly merchantId: string;
   readonly merchantDomain: string;
   readonly checkoutSessionId: string;
@@ -61,17 +51,6 @@ export interface BeginPaymentOutcomeInput {
   readonly reservationId: string;
   readonly idempotencyKey: string;
   readonly requestDigest: string;
-  /** Canonical authorization evidence is required by production callers after #49. */
-  readonly intentDigest?: string;
-  readonly authoritativeStateDigest?: string;
-  readonly decisionId?: string;
-  readonly policyId?: string;
-  readonly policyVersion?: number;
-  readonly decisionReasonCodes?: readonly string[];
-  readonly decisionEvaluatedAt?: Date;
-  readonly protocol?: string;
-  readonly operation?: string;
-  readonly approvalRequestId?: string;
   readonly merchantId: string;
   readonly merchantDomain: string;
   readonly checkoutSessionId: string;
@@ -154,16 +133,6 @@ interface PaymentOutcomeRow extends QueryResultRow {
   reservationId: string;
   idempotencyKey: string;
   requestDigest: string;
-  intentDigest: string | null;
-  authoritativeStateDigest: string | null;
-  decisionId: string | null;
-  policyId: string | null;
-  policyVersion: number | null;
-  decisionReasonCodes: string[];
-  decisionEvaluatedAt: Date | null;
-  protocol: string | null;
-  operation: string | null;
-  approvalRequestId: string | null;
   merchantId: string;
   merchantDomain: string;
   checkoutSessionId: string;
@@ -206,18 +175,13 @@ export class PostgresPaymentOutcomeStore implements ReconciliationPaymentOutcome
     const inserted = await this.sql.query<PaymentOutcomeRow>(
       `insert into "PaymentOutcome" (
          "id", "organizationId", "userId", "agentId", "mandateId",
-         "reservationId", "idempotencyKey", "requestDigest",
-         "intentDigest", "authoritativeStateDigest", "decisionId", "policyId", "policyVersion",
-         "decisionReasonCodes", "decisionEvaluatedAt", "protocol", "operation", "approvalRequestId",
-         "merchantId", "merchantDomain", "checkoutSessionId", "amountMinor", "currency",
+         "reservationId", "idempotencyKey", "requestDigest", "merchantId",
+         "merchantDomain", "checkoutSessionId", "amountMinor", "currency",
          "status", "forwardedAt", "createdAt", "updatedAt"
        ) values (
          $1::uuid, $2::uuid, $3::uuid, $4::uuid, $5::uuid,
-         $6, $7, $8,
-         $9, $10, $11::uuid, $12::uuid, $13,
-         $14::text[], $15, $16, $17, $18::uuid,
-         $19, $20, $21, $22::bigint, $23,
-         'FORWARDING', $24, $24, $24
+         $6, $7, $8, $9, $10, $11, $12::bigint, $13,
+         'FORWARDING', $14, $14, $14
        )
        on conflict ("organizationId", "idempotencyKey") do nothing
        returning *`,
@@ -230,16 +194,6 @@ export class PostgresPaymentOutcomeStore implements ReconciliationPaymentOutcome
         input.reservationId,
         input.idempotencyKey,
         input.requestDigest,
-        input.intentDigest ?? null,
-        input.authoritativeStateDigest ?? null,
-        input.decisionId ?? null,
-        input.policyId ?? null,
-        input.policyVersion ?? null,
-        [...(input.decisionReasonCodes ?? [])],
-        input.decisionEvaluatedAt ?? null,
-        input.protocol ?? null,
-        input.operation ?? null,
-        input.approvalRequestId ?? null,
         input.merchantId,
         input.merchantDomain,
         input.checkoutSessionId,
@@ -261,8 +215,7 @@ export class PostgresPaymentOutcomeStore implements ReconciliationPaymentOutcome
 
     return {
       kind:
-        existing.requestDigest === input.requestDigest &&
-        (input.intentDigest === undefined || existing.intentDigest === input.intentDigest)
+        existing.requestDigest === input.requestDigest
           ? BeginPaymentOutcomeKind.EXISTING
           : BeginPaymentOutcomeKind.CONFLICT,
       outcome: existing,
@@ -482,18 +435,6 @@ function mapRow(row: PaymentOutcomeRow): PaymentOutcomeRecord {
     reservationId: row.reservationId,
     idempotencyKey: row.idempotencyKey,
     requestDigest: row.requestDigest,
-    ...(row.intentDigest ? { intentDigest: row.intentDigest } : {}),
-    ...(row.authoritativeStateDigest
-      ? { authoritativeStateDigest: row.authoritativeStateDigest }
-      : {}),
-    ...(row.decisionId ? { decisionId: row.decisionId } : {}),
-    ...(row.policyId ? { policyId: row.policyId } : {}),
-    ...(row.policyVersion !== null ? { policyVersion: row.policyVersion } : {}),
-    decisionReasonCodes: row.decisionReasonCodes,
-    ...(row.decisionEvaluatedAt ? { decisionEvaluatedAt: row.decisionEvaluatedAt } : {}),
-    ...(row.protocol ? { protocol: row.protocol } : {}),
-    ...(row.operation ? { operation: row.operation } : {}),
-    ...(row.approvalRequestId ? { approvalRequestId: row.approvalRequestId } : {}),
     merchantId: row.merchantId,
     merchantDomain: row.merchantDomain,
     checkoutSessionId: row.checkoutSessionId,
