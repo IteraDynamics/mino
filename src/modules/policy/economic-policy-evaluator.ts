@@ -8,7 +8,13 @@ import {
   type PolicyDecision,
 } from "../../domain/evaluation/evaluation.types.js";
 import type { PolicyEvaluator as PolicyEvaluatorContract } from "../../domain/evaluation/policy-evaluator.interface.js";
-import { resolveMerchantPolicyProjection } from "../../domain/economic/counterparty-identity.js";
+import {
+  counterpartyMatchesSelector,
+  economicCounterpartyKey,
+  resolveEconomicCounterparty,
+  resolveMerchantPolicyProjection,
+} from "../../domain/economic/counterparty-identity.js";
+import { economicAmount, economicItems } from "../../domain/economic/economic-intent.types.js";
 
 export interface PolicyEvaluatorDependencies {
   readonly generateId: () => UUID;
@@ -33,10 +39,12 @@ const HARD_BLOCK_REASONS = new Set<DecisionReason>([
   DecisionReason.ORGANIZATION_MISMATCH,
   DecisionReason.AGENT_MISMATCH,
   DecisionReason.USER_MISMATCH,
+  DecisionReason.COUNTERPARTY_NOT_APPROVED,
   DecisionReason.MERCHANT_NOT_APPROVED,
   DecisionReason.CATEGORY_UNKNOWN,
   DecisionReason.CATEGORY_RESTRICTED,
   DecisionReason.RATE_LIMIT_EXCEEDED,
+  DecisionReason.CROSS_COUNTERPARTY_BURST,
   DecisionReason.CROSS_MERCHANT_BURST,
   DecisionReason.CURRENCY_NOT_SUPPORTED,
   DecisionReason.FX_QUOTE_REQUIRED,
@@ -73,7 +81,7 @@ export class PolicyEvaluator implements PolicyEvaluatorContract {
 
     this.evaluateMandateState(context, reasons);
     this.evaluateIdentityBinding(context, reasons);
-    this.evaluateMerchant(context, reasons);
+    this.evaluateCounterparty(context, reasons);
     this.evaluateCategories(context, reasons);
     this.evaluateVelocity(context, reasons);
 
@@ -99,13 +107,14 @@ export class PolicyEvaluator implements PolicyEvaluatorContract {
 
     const finishedAt = this.monotonicMicros();
     const latency = Math.max(0, Math.trunc(finishedAt - startedAt));
+    const requestedAmount = economicAmount(context.checkout);
 
     const base: PolicyDecision = {
       decisionId: this.generateId(),
       requestId: context.checkout.requestId,
       verdict,
       reasons,
-      requestedAmount: context.checkout.total,
+      requestedAmount,
       mandateId: context.mandate.id,
       policyId: context.mandate.policyId,
       policyVersion: context.mandate.policyVersion,
@@ -165,10 +174,20 @@ export class PolicyEvaluator implements PolicyEvaluatorContract {
     }
   }
 
-  private evaluateMerchant(
+  private evaluateCounterparty(
     context: EvaluationContext,
     reasons: DecisionReason[],
   ): void {
+    const selectors = context.mandate.approvedCounterparties;
+    if (selectors !== undefined) {
+      const counterparty = resolveEconomicCounterparty(context.checkout);
+      if (!counterparty || !selectors.some((selector) => counterpartyMatchesSelector(counterparty, selector))) {
+        reasons.push(DecisionReason.COUNTERPARTY_NOT_APPROVED);
+      }
+      return;
+    }
+
+    // Compatibility path for existing merchant-scoped mandates.
     const merchant = resolveMerchantPolicyProjection(context.checkout);
     if (!merchant) {
       reasons.push(DecisionReason.MERCHANT_NOT_APPROVED);
@@ -198,7 +217,7 @@ export class PolicyEvaluator implements PolicyEvaluatorContract {
       context.mandate.restrictedCategories.map(normalizeCategory),
     );
 
-    for (const line of context.checkout.cart) {
+    for (const line of economicItems(context.checkout)) {
       if (!line.category?.trim()) {
         pushUnique(reasons, DecisionReason.CATEGORY_UNKNOWN);
         continue;
@@ -219,6 +238,26 @@ export class PolicyEvaluator implements PolicyEvaluatorContract {
       context.mandate.velocity.maxTransactionsPerMinute
     ) {
       reasons.push(DecisionReason.RATE_LIMIT_EXCEEDED);
+    }
+
+    if (context.mandate.approvedCounterparties !== undefined) {
+      const counterparty = resolveEconomicCounterparty(context.checkout);
+      if (!counterparty) return;
+
+      const currentKey = economicCounterpartyKey(counterparty);
+      const seen = new Set(context.velocity.counterpartyKeysInWindow ?? []);
+      const addsDistinct = !seen.has(currentKey);
+      const projected =
+        Math.max(context.velocity.distinctCounterpartiesInWindow ?? seen.size, seen.size) +
+        (addsDistinct ? 1 : 0);
+      const limit =
+        context.mandate.velocity.maxDistinctCounterpartiesInWindow ??
+        context.mandate.velocity.maxDistinctMerchantsInWindow;
+
+      if (projected > limit) {
+        reasons.push(DecisionReason.CROSS_COUNTERPARTY_BURST);
+      }
+      return;
     }
 
     const merchant = resolveMerchantPolicyProjection(context.checkout);
@@ -248,7 +287,8 @@ export class PolicyEvaluator implements PolicyEvaluatorContract {
     context: EvaluationContext,
     reasons: DecisionReason[],
   ): Money | undefined {
-    const sourceCurrency = normalizeCurrency(context.checkout.total.currency);
+    const requested = economicAmount(context.checkout);
+    const sourceCurrency = normalizeCurrency(requested.currency);
     const mandateCurrency = normalizeCurrency(context.mandate.currency);
 
     if (!getMinorDigits(sourceCurrency) || !getMinorDigits(mandateCurrency)) {
@@ -264,7 +304,7 @@ export class PolicyEvaluator implements PolicyEvaluatorContract {
     if (sourceCurrency === mandateCurrency) {
       return {
         currency: mandateCurrency,
-        minorUnits: context.checkout.total.minorUnits,
+        minorUnits: requested.minorUnits,
       };
     }
 
@@ -288,7 +328,7 @@ export class PolicyEvaluator implements PolicyEvaluatorContract {
     }
 
     try {
-      return convertMoneyCeiling(context.checkout.total, mandateCurrency, quote);
+      return convertMoneyCeiling(requested, mandateCurrency, quote);
     } catch {
       reasons.push(DecisionReason.FX_QUOTE_INVALID);
       return undefined;
@@ -390,7 +430,7 @@ function convertMoneyCeiling(
   quote: FxQuote,
 ): Money {
   if (money.minorUnits < 0n) {
-    throw new Error("Negative checkout totals are not supported");
+    throw new Error("Negative economic amounts are not supported");
   }
 
   const sourceCurrency = normalizeCurrency(money.currency);
