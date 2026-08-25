@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  ECONOMIC_INTENT_SCHEMA_VERSION,
   authorityReferenceFromMandate,
   bindEconomicIntent,
 } from "../../src/domain/economic/canonical-economic-intent.js";
@@ -98,11 +99,21 @@ describe("canonical EconomicIntent", () => {
     ).not.toBe(base);
   });
 
-  it("deep-freezes the canonical object and excludes transport/raw fields", () => {
+  it("deep-freezes the v2 neutral canonical object and excludes transport/raw fields", () => {
     const bound = bindEconomicIntent(intent(), authorityReferenceFromMandate(mandate));
+    expect(bound.canonicalIntent.schemaVersion).toBe(ECONOMIC_INTENT_SCHEMA_VERSION);
+    expect(bound.canonicalIntent.schemaVersion).toBe(2);
     expect(Object.isFrozen(bound.canonicalIntent)).toBe(true);
     expect(Object.isFrozen(bound.canonicalIntent.economics)).toBe(true);
-    expect(Object.isFrozen(bound.canonicalIntent.economics.cart)).toBe(true);
+    expect(Object.isFrozen(bound.canonicalIntent.economics.items)).toBe(true);
+    expect(bound.canonicalIntent.economics.amount).toEqual({
+      currency: "USD",
+      minorUnits: 5_000n,
+    });
+    expect(bound.canonicalIntent.economics.checkoutBreakdown?.subtotal).toEqual({
+      currency: "USD",
+      minorUnits: 5_000n,
+    });
     expect(bound.canonicalIntent).not.toHaveProperty("requestId");
     expect(bound.canonicalIntent).not.toHaveProperty("rawPayload");
   });
