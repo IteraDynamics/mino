@@ -40,6 +40,7 @@ const decision: PolicyDecision = {
   mandateId: "mandate-1",
   policyId: "policy-1",
   policyVersion: 1,
+  intentDigest: "A".repeat(43),
   eligibleForDelegationAssertion: true,
   evaluationLatencyMicros: 10,
   evaluatedAt: NOW,
@@ -60,5 +61,19 @@ describe("ACPAuthorizationGrantAdapter", () => {
     expect(issueGrant.mock.invocationCallOrder[0]).toBeLessThan(
       issueLegacy.mock.invocationCallOrder[0]!,
     );
+  });
+
+  it("refuses to mint an execution grant from an unbound policy decision", () => {
+    const issueGrant = vi.fn(() => ({ token: "grant-token", claims: {} as never }));
+    const issueLegacy = vi.fn(() => "legacy-acp-assertion");
+    const adapter = new ACPAuthorizationGrantAdapter(
+      { issue: issueGrant },
+      { issue: issueLegacy },
+    );
+    const { intentDigest: _omitted, ...unbound } = decision;
+
+    expect(() => adapter.issue(intent, unbound, NOW)).toThrow(/EconomicIntent-bound decision/);
+    expect(issueGrant).not.toHaveBeenCalled();
+    expect(issueLegacy).not.toHaveBeenCalled();
   });
 });
