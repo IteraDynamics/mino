@@ -23,7 +23,10 @@ export class MemoryHumanApprovalService implements HumanApprovalService {
     const key = this.key(input.mandate.organizationId, input.idempotencyKey);
     const existing = this.byKey.get(key);
     if (existing) {
-      if (existing.requestDigest !== input.requestDigest) {
+      const intentMatches =
+        input.decision.intentDigest === undefined ||
+        existing.intentDigest === input.decision.intentDigest;
+      if (existing.requestDigest !== input.requestDigest || !intentMatches) {
         throw new ApprovalRequestConflictError();
       }
       this.notificationCount += 1;
@@ -44,6 +47,7 @@ export class MemoryHumanApprovalService implements HumanApprovalService {
       requestId: input.decision.requestId,
       idempotencyKey: input.idempotencyKey,
       requestDigest: input.requestDigest,
+      ...(input.decision.intentDigest ? { intentDigest: input.decision.intentDigest } : {}),
       policyVersion: input.mandate.policyVersion,
       merchantId: input.merchantId,
       merchantDomain: input.merchantDomain,
