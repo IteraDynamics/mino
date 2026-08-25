@@ -1,21 +1,3 @@
--- Preserve pre-execution canonical authorization evidence on new payment outcomes.
--- Columns remain nullable so existing terminal outcomes can migrate safely; receipt
--- issuance fails closed for legacy rows that predate this evidence.
-ALTER TABLE "PaymentOutcome"
-  ADD COLUMN "intentDigest" TEXT,
-  ADD COLUMN "authoritativeStateDigest" TEXT,
-  ADD COLUMN "decisionId" UUID,
-  ADD COLUMN "policyId" UUID,
-  ADD COLUMN "policyVersion" INTEGER,
-  ADD COLUMN "decisionReasonCodes" TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
-  ADD COLUMN "decisionEvaluatedAt" TIMESTAMPTZ(6),
-  ADD COLUMN "protocol" TEXT,
-  ADD COLUMN "operation" TEXT,
-  ADD COLUMN "approvalRequestId" UUID;
-
-CREATE INDEX "PaymentOutcome_intentDigest_idx"
-  ON "PaymentOutcome"("intentDigest");
-
 CREATE TABLE "AuthorizationReceipt" (
   "id" UUID NOT NULL DEFAULT gen_random_uuid(),
   "paymentOutcomeId" UUID NOT NULL,
