@@ -1,12 +1,14 @@
 import { generateKeyPairSync } from "node:crypto";
 import { describe, expect, it } from "vitest";
+import type { AuthorizationDecision } from "../../src/domain/economic/authorization-decision.js";
 import type { EconomicIntent } from "../../src/domain/economic/economic-intent.types.js";
-import { DecisionVerdict, type PolicyDecision } from "../../src/domain/evaluation/evaluation.types.js";
+import { DecisionVerdict } from "../../src/domain/evaluation/evaluation.types.js";
 import { AuthorizationGrantService } from "../../src/modules/authorization/authorization-grant.service.js";
 import { StripeExecutionAdapter } from "../../src/modules/providers/stripe/stripe-execution-adapter.js";
 import type { StripePaymentIntentClient } from "../../src/modules/providers/stripe/stripe-payment-intent-client.js";
 
 const NOW = new Date("2026-08-19T21:00:00.000Z");
+const INTENT_DIGEST = "S".repeat(43);
 
 function economicIntent(): EconomicIntent {
   return {
@@ -44,7 +46,7 @@ function economicIntent(): EconomicIntent {
   };
 }
 
-function allowedDecision(): PolicyDecision {
+function allowedDecision(): AuthorizationDecision {
   return {
     decisionId: "decision-stripe-proof",
     requestId: "request-stripe-proof",
@@ -56,6 +58,7 @@ function allowedDecision(): PolicyDecision {
     mandateId: "mandate-1",
     policyId: "policy-1",
     policyVersion: 1,
+    intentDigest: INTENT_DIGEST,
     eligibleForDelegationAssertion: true,
     evaluationLatencyMicros: 10,
     evaluatedAt: NOW,
@@ -63,7 +66,7 @@ function allowedDecision(): PolicyDecision {
 }
 
 describe("Stripe second-provider proof", () => {
-  it("consumes Mino's provider-neutral AuthorizationGrant directly without a Stripe-specific authorization artifact", async () => {
+  it("consumes Mino's intent-bound AuthorizationGrant directly without a Stripe-specific authorization artifact", async () => {
     const { privateKey } = generateKeyPairSync("ed25519");
     const grants = new AuthorizationGrantService(
       { keyId: "grant-k1", privateKey },
@@ -119,6 +122,7 @@ describe("Stripe second-provider proof", () => {
     expect(result.body).toMatchObject({ status: "succeeded" });
     expect(grant.claims.aud).toBe("mino:economic-execution");
     expect(grant.claims.operation).toBe("AUTHORIZE_PAYMENT");
+    expect(grant.claims.intent_digest).toBe(INTENT_DIGEST);
     expect(grant.claims.counterparty.identifiers).toContainEqual({
       scheme: "PROVIDER_REFERENCE",
       namespace: "stripe-account",
