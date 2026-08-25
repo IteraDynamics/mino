@@ -13,13 +13,14 @@ import type {
   EconomicOperation,
   EconomicProviderProtocol,
 } from "../../domain/economic/economic-intent.types.js";
+import { DecisionReason } from "../../domain/evaluation/decision-reasons.js";
 import type {
+  AuditSigningKey,
   AuditSigningKeyProvider,
   AuditVerificationKeyResolver,
 } from "../audit/postgres-audit-ledger.js";
 
 const RECEIPT_SIGNATURE_TYPE = "mino.authorization.receipt.v1";
-const HUMAN_APPROVAL_GRANTED = "HUMAN_APPROVAL_GRANTED";
 
 export interface AuthorizationReceiptSqlClient {
   query<R extends QueryResultRow = QueryResultRow>(
@@ -81,11 +82,21 @@ interface ReceiptRow extends QueryResultRow {
   issuedAt: Date;
 }
 
+interface MissingTerminalOutcomeRow extends QueryResultRow {
+  id: string;
+}
+
 interface DecisionEvidence {
   readonly intentDigest: string;
   readonly policyId: string;
   readonly policyVersion: number;
   readonly evaluatedAt: string;
+}
+
+export interface AuthorizationReceiptBackfillResult {
+  readonly scanned: number;
+  readonly issued: number;
+  readonly errors: number;
 }
 
 export class AuthorizationReceiptEvidenceUnavailableError extends Error {
@@ -100,6 +111,13 @@ export interface AuthorizationReceiptIssuer {
   getByPaymentOutcomeId(paymentOutcomeId: string): Promise<SignedAuthorizationReceipt | undefined>;
 }
 
+export interface AuthorizationReceiptBackfiller {
+  issueMissingTerminalReceipts(
+    now: Date,
+    limit?: number,
+  ): Promise<AuthorizationReceiptBackfillResult>;
+}
+
 /**
  * Persists one immutable, signed post-execution proof per terminal PaymentOutcome.
  *
@@ -112,7 +130,9 @@ export interface AuthorizationReceiptIssuer {
  * domain-separated from the audit chain, so a valid audit signature cannot be
  * replayed as a receipt signature.
  */
-export class PostgresAuthorizationReceiptService implements AuthorizationReceiptIssuer {
+export class PostgresAuthorizationReceiptService
+  implements AuthorizationReceiptIssuer, AuthorizationReceiptBackfiller
+{
   public constructor(
     private readonly sql: AuthorizationReceiptSqlClient,
     private readonly signingKeys: AuditSigningKeyProvider,
@@ -148,10 +168,10 @@ export class PostgresAuthorizationReceiptService implements AuthorizationReceipt
     assertAuditIdentityBinding(outcome, authorization);
 
     const decision = decisionEvidence(authorization);
-    const approval = authorization.reasonCodes.includes(HUMAN_APPROVAL_GRANTED)
+    const approval = authorization.reasonCodes.includes(DecisionReason.HUMAN_APPROVAL_GRANTED)
       ? await this.loadApprovalEvidence(outcome, decision.intentDigest)
       : undefined;
-    if (authorization.reasonCodes.includes(HUMAN_APPROVAL_GRANTED) && !approval) {
+    if (authorization.reasonCodes.includes(DecisionReason.HUMAN_APPROVAL_GRANTED) && !approval) {
       throw new AuthorizationReceiptEvidenceUnavailableError(
         "Authorization receipt requires intent-bound human approval evidence",
       );
@@ -179,9 +199,9 @@ export class PostgresAuthorizationReceiptService implements AuthorizationReceipt
       ...(approval ? { approval } : {}),
       execution: {
         paymentOutcomeId: outcome.id,
-        protocol: authorization.protocol as EconomicProviderProtocol,
-        operation: authorization.operation as EconomicOperation,
-        status: outcome.status as AuthorizationReceiptExecutionStatus,
+        protocol: parseProtocol(authorization.protocol),
+        operation: parseOperation(authorization.operation),
+        status: parseTerminalStatus(outcome.status),
         providerReference: outcome.checkoutSessionId,
         amountMinor: outcome.amountMinor,
         currency: outcome.currency,
@@ -200,11 +220,7 @@ export class PostgresAuthorizationReceiptService implements AuthorizationReceipt
     });
 
     const signingKey = await this.signingKeys.getActiveSigningKey(outcome.organizationId);
-    const receiptDigest = receiptPayloadDigest(payload);
-    const signature = signEd25519(
-      receiptSignaturePayload(receiptDigest),
-      signingKey.privateKey,
-    ).toString("base64url");
+    const signed = signAuthorizationReceipt(payload, signingKey);
 
     const inserted = await this.sql.query<ReceiptRow>(
       `insert into "AuthorizationReceipt" (
@@ -225,9 +241,9 @@ export class PostgresAuthorizationReceiptService implements AuthorizationReceipt
         outcome.mandateId,
         decision.intentDigest,
         JSON.stringify(payload),
-        receiptDigest,
-        signature,
-        signingKey.keyId,
+        signed.receiptDigest,
+        signed.signature,
+        signed.signingKeyId,
         now,
       ],
     );
@@ -243,6 +259,54 @@ export class PostgresAuthorizationReceiptService implements AuthorizationReceipt
       throw new Error("Authorization receipt conflicts with the persisted economic intent");
     }
     return concurrent;
+  }
+
+  /**
+   * Retry-safe backfill for terminal outcomes whose receipt was not produced on the
+   * request path. Legacy outcomes whose authorization audit predates canonical
+   * `intentDigest` are intentionally excluded rather than generating weaker proof.
+   */
+  public async issueMissingTerminalReceipts(
+    now: Date,
+    limit = 25,
+  ): Promise<AuthorizationReceiptBackfillResult> {
+    if (!Number.isSafeInteger(limit) || limit <= 0 || limit > 1000) {
+      throw new Error("Authorization receipt backfill limit must be between 1 and 1000");
+    }
+
+    const result = await this.sql.query<MissingTerminalOutcomeRow>(
+      `select outcome."id"
+         from "PaymentOutcome" as outcome
+         left join "AuthorizationReceipt" as receipt
+           on receipt."paymentOutcomeId" = outcome."id"
+        where outcome."status" in ('SUCCEEDED', 'FAILED_DEFINITIVE')
+          and receipt."id" is null
+          and exists (
+            select 1
+              from "AuditLog" as audit
+             where audit."organizationId" = outcome."organizationId"
+               and audit."mandateId" = outcome."mandateId"
+               and audit."reservationId" = outcome."reservationId"
+               and audit."verdict" = 'ALLOW'
+               and jsonb_typeof(audit."decisionSnapshot" -> 'intentDigest') = 'string'
+          )
+        order by outcome."resolvedAt" asc nulls last, outcome."id" asc
+        limit $1::int`,
+      [limit],
+    );
+
+    let issued = 0;
+    let errors = 0;
+    for (const row of result.rows) {
+      try {
+        await this.issueForPaymentOutcome(row.id, now);
+        issued += 1;
+      } catch {
+        errors += 1;
+      }
+    }
+
+    return { scanned: result.rows.length, issued, errors };
   }
 
   private async loadOutcome(paymentOutcomeId: string): Promise<OutcomeEvidenceRow> {
@@ -322,6 +386,22 @@ export class PostgresAuthorizationReceiptService implements AuthorizationReceipt
   }
 }
 
+export function signAuthorizationReceipt(
+  payload: AuthorizationReceiptPayload,
+  signingKey: AuditSigningKey,
+): SignedAuthorizationReceipt {
+  const receiptDigest = receiptPayloadDigest(payload);
+  return {
+    payload,
+    receiptDigest,
+    signingKeyId: signingKey.keyId,
+    signature: signEd25519(
+      receiptSignaturePayload(receiptDigest),
+      signingKey.privateKey,
+    ).toString("base64url"),
+  };
+}
+
 export async function verifyAuthorizationReceipt(
   receipt: SignedAuthorizationReceipt,
   keys: AuditVerificationKeyResolver,
@@ -399,10 +479,14 @@ function decisionEvidence(audit: AuditAuthorizationRow): DecisionEvidence {
     );
   }
   if (typeof policyId !== "string" || !policyId.trim()) {
-    throw new AuthorizationReceiptEvidenceUnavailableError("Authorization decision is missing policy identity");
+    throw new AuthorizationReceiptEvidenceUnavailableError(
+      "Authorization decision is missing policy identity",
+    );
   }
   if (!Number.isSafeInteger(policyVersion) || policyVersion !== audit.policyVersion) {
-    throw new AuthorizationReceiptEvidenceUnavailableError("Authorization decision policy version is inconsistent");
+    throw new AuthorizationReceiptEvidenceUnavailableError(
+      "Authorization decision policy version is inconsistent",
+    );
   }
   const evaluatedAtIso =
     typeof evaluatedAt === "string" && !Number.isNaN(Date.parse(evaluatedAt))
@@ -423,6 +507,34 @@ function approvalIntentDigest(value: unknown): string | undefined {
   return typeof digest === "string" && /^[A-Za-z0-9_-]{43}$/.test(digest)
     ? digest
     : undefined;
+}
+
+function parseProtocol(value: string): EconomicProviderProtocol {
+  if (value === "ACP" || value === "STRIPE" || value === "CUSTOM") return value;
+  throw new AuthorizationReceiptEvidenceUnavailableError(
+    "Authorization audit contains an unsupported provider protocol",
+  );
+}
+
+function parseOperation(value: string): EconomicOperation {
+  switch (value) {
+    case "CREATE_CHECKOUT_SESSION":
+    case "UPDATE_CHECKOUT_SESSION":
+    case "COMPLETE_CHECKOUT":
+    case "AUTHORIZE_PAYMENT":
+      return value;
+    default:
+      throw new AuthorizationReceiptEvidenceUnavailableError(
+        "Authorization audit contains an unsupported economic operation",
+      );
+  }
+}
+
+function parseTerminalStatus(value: string): AuthorizationReceiptExecutionStatus {
+  if (value === "SUCCEEDED" || value === "FAILED_DEFINITIVE") return value;
+  throw new AuthorizationReceiptEvidenceUnavailableError(
+    "Authorization receipt requires a terminal payment outcome",
+  );
 }
 
 function mapReceiptRow(row: ReceiptRow): SignedAuthorizationReceipt {
