@@ -82,8 +82,32 @@ export interface CreateAppOptions {
   readonly now?: () => Date;
 }
 
+export interface AppRuntimeDependencies {
+  readonly proxy: CheckoutProxyService;
+  readonly approvals?: HumanApprovalService;
+}
+
+const appRuntimeDependencies = new WeakMap<FastifyInstance, AppRuntimeDependencies>();
+
+/**
+ * Internal composition handoff for surfaces registered after the core Fastify app
+ * is built. This does not expose runtime services over HTTP and avoids rebuilding
+ * the economic authorization dependency graph for Personal adapters.
+ */
+export function getAppRuntimeDependencies(app: FastifyInstance): AppRuntimeDependencies {
+  const runtime = appRuntimeDependencies.get(app);
+  if (!runtime) {
+    throw new Error("Mino application runtime dependencies are not available");
+  }
+  return runtime;
+}
+
 export async function createApp(options: CreateAppOptions): Promise<FastifyInstance> {
   const app = Fastify({ logger: options.logger ?? false });
+  appRuntimeDependencies.set(app, {
+    proxy: options.proxy,
+    ...(options.approvals ? { approvals: options.approvals } : {}),
+  });
 
   app.get("/healthz", async () => ({ status: "ok" }));
   await registerACPRoutes(app, {

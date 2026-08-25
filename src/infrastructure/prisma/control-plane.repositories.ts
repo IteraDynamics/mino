@@ -153,6 +153,8 @@ function mapApprovalMode(value: string): ApprovalMode {
   switch (value) {
     case "AUTO_APPROVE":
       return ApprovalMode.AUTO_APPROVE;
+    case "OWNER_APPROVAL":
+      return ApprovalMode.OWNER_APPROVAL;
     case "DUAL_SIGNATURE_SLACK":
       return ApprovalMode.DUAL_SIGNATURE_SLACK;
     case "HARD_BLOCK":
