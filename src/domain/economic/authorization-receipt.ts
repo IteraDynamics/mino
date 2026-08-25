@@ -58,8 +58,9 @@ export interface AuthorizationReceiptPayload {
     readonly resolvedAt: string;
   };
   readonly evidence: {
-    readonly authoritativeStateDigest: string;
-    readonly requestDigest: string;
+    /** Digest used by payment idempotency to bind the exact execution attempt. */
+    readonly executionRequestDigest: string;
+    /** Tamper-evident audit-chain event that captured the pre-execution authorization. */
     readonly audit: AuthorizationReceiptAuditEvidence;
   };
   readonly issuedAt: string;
