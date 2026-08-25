@@ -1,0 +1,154 @@
+import { canonicalJson, sha256Base64Url } from "../../infrastructure/crypto/canonical-json.js";
+import type { AgentSpendMandate } from "../mandates/mandate.types.js";
+import type { Money } from "../money.js";
+import { resolveEconomicCounterparty } from "./counterparty-identity.js";
+import type {
+  EconomicCounterpartyIdentity,
+  EconomicIntent,
+  EconomicLineItem,
+  EconomicOperation,
+  EconomicProviderProtocol,
+} from "./economic-intent.types.js";
+
+export const ECONOMIC_INTENT_SCHEMA_VERSION = 1 as const;
+
+/** Facts that may exist around an economic action. Only authoritative/derived facts belong in the canonical digest. */
+export type EconomicFactSource = "PROVIDER_AUTHORITATIVE" | "MINO_DERIVED" | "AGENT_ASSERTED";
+
+export interface EconomicAuthorityReference {
+  readonly organizationId: string;
+  readonly userId: string;
+  readonly agentId: string;
+  readonly mandateId: string;
+  readonly policyId: string;
+  readonly policyVersion: number;
+}
+
+export interface CanonicalEconomicIntent {
+  readonly schemaVersion: typeof ECONOMIC_INTENT_SCHEMA_VERSION;
+  readonly authority: EconomicAuthorityReference;
+  readonly operation: EconomicOperation;
+  readonly provider: {
+    readonly protocol: EconomicProviderProtocol;
+    /** Digest of the adapter's stable projection of provider-authoritative state. */
+    readonly authoritativeStateDigest: string;
+  };
+  readonly counterparty: EconomicCounterpartyIdentity;
+  readonly economics: {
+    readonly cart: readonly EconomicLineItem[];
+    readonly subtotal: Money;
+    readonly tax?: Money;
+    readonly shipping?: Money;
+    readonly total: Money;
+  };
+  /** Raw idempotency keys are transport secrets/identifiers; canonical intent binds only their digest. */
+  readonly idempotencyDigest: string;
+}
+
+export interface BoundEconomicIntent {
+  readonly canonicalIntent: CanonicalEconomicIntent;
+  readonly intentDigest: string;
+}
+
+/**
+ * Elevate provider-normalized authoritative state into Mino's immutable pre-execution object.
+ *
+ * `requestId` and `rawPayload` are intentionally excluded: retries of the same semantic
+ * action must produce the same intent digest, and arbitrary provider/agent payload text must
+ * not become authorization truth merely because it was present on the request.
+ */
+export function bindEconomicIntent(
+  intent: EconomicIntent,
+  mandate: AgentSpendMandate,
+): BoundEconomicIntent {
+  assertAuthorityBinding(intent, mandate);
+
+  const counterparty = resolveEconomicCounterparty(intent);
+  if (!counterparty) {
+    throw new Error("EconomicIntent requires an unambiguous normalized counterparty");
+  }
+
+  const authoritativeStateDigest = intent.authoritativeStateDigest?.trim();
+  if (!authoritativeStateDigest || !/^[A-Za-z0-9_-]{43}$/.test(authoritativeStateDigest)) {
+    throw new Error("EconomicIntent requires a SHA-256 base64url authoritative-state digest");
+  }
+
+  const canonicalIntent: CanonicalEconomicIntent = deepFreeze({
+    schemaVersion: ECONOMIC_INTENT_SCHEMA_VERSION,
+    authority: {
+      organizationId: mandate.organizationId,
+      userId: mandate.userId,
+      agentId: mandate.agentId,
+      mandateId: mandate.id,
+      policyId: mandate.policyId,
+      policyVersion: mandate.policyVersion,
+    },
+    operation: intent.operation,
+    provider: {
+      protocol: intent.protocol,
+      authoritativeStateDigest,
+    },
+    counterparty: cloneCounterparty(counterparty),
+    economics: {
+      cart: intent.cart.map(cloneLineItem),
+      subtotal: cloneMoney(intent.subtotal),
+      ...(intent.tax ? { tax: cloneMoney(intent.tax) } : {}),
+      ...(intent.shipping ? { shipping: cloneMoney(intent.shipping) } : {}),
+      total: cloneMoney(intent.total),
+    },
+    idempotencyDigest: sha256Base64Url(intent.idempotencyKey),
+  });
+
+  return Object.freeze({
+    canonicalIntent,
+    intentDigest: sha256Base64Url(canonicalJson(canonicalIntent)),
+  });
+}
+
+function assertAuthorityBinding(intent: EconomicIntent, mandate: AgentSpendMandate): void {
+  if (
+    intent.organizationId !== mandate.organizationId ||
+    intent.userId !== mandate.userId ||
+    intent.agentId !== mandate.agentId
+  ) {
+    throw new Error("EconomicIntent identity does not match delegated authority");
+  }
+}
+
+function cloneCounterparty(value: EconomicCounterpartyIdentity): EconomicCounterpartyIdentity {
+  return {
+    kind: value.kind,
+    identifiers: value.identifiers.map((identifier) => ({
+      scheme: identifier.scheme,
+      value: identifier.value,
+      ...(identifier.namespace ? { namespace: identifier.namespace } : {}),
+    })),
+  };
+}
+
+function cloneLineItem(value: EconomicLineItem): EconomicLineItem {
+  return {
+    lineId: value.lineId,
+    ...(value.sku ? { sku: value.sku } : {}),
+    ...(value.productId ? { productId: value.productId } : {}),
+    name: value.name,
+    ...(value.category ? { category: value.category } : {}),
+    quantity: value.quantity,
+    unitPrice: cloneMoney(value.unitPrice),
+    totalPrice: cloneMoney(value.totalPrice),
+  };
+}
+
+function cloneMoney(value: Money): Money {
+  return { currency: value.currency, minorUnits: value.minorUnits };
+}
+
+function deepFreeze<T>(value: T): T {
+  if (value && typeof value === "object" && !Object.isFrozen(value)) {
+    Object.freeze(value);
+    for (const entry of Object.values(value as Record<string, unknown>)) {
+      deepFreeze(entry);
+    }
+  }
+  return value;
+}
