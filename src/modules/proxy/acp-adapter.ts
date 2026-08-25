@@ -3,6 +3,7 @@ import type {
   EconomicMerchantIdentity,
   EconomicOperation,
 } from "../../domain/economic/economic-intent.types.js";
+import { canonicalJson, sha256Base64Url } from "../../infrastructure/crypto/canonical-json.js";
 
 export const ACP_STABLE_VERSION = "2026-04-17";
 
@@ -53,7 +54,8 @@ export interface NormalizeACPCheckoutInput {
 
 /**
  * ACP is an edge adapter: it validates provider-specific merchant state and emits
- * the provider-neutral EconomicIntent consumed by Mino's authorization core.
+ * provider-normalized economic facts. Mino later binds those facts to delegated
+ * authority to form the canonical immutable EconomicIntent.
  */
 export class ACPAdapter {
   public normalizeCheckoutSession(input: NormalizeACPCheckoutInput): EconomicIntent {
@@ -93,6 +95,9 @@ export class ACPAdapter {
         : {}),
       total: { currency, minorUnits: BigInt(total) },
       idempotencyKey: input.idempotencyKey,
+      authoritativeStateDigest: sha256Base64Url(
+        canonicalJson(authoritativeACPStateProjection(session)),
+      ),
       rawPayload: session,
     };
   }
@@ -131,6 +136,32 @@ export class ACPProtocolError extends Error {
     super(message);
     this.name = "ACPProtocolError";
   }
+}
+
+function authoritativeACPStateProjection(session: ACPCheckoutSession) {
+  return {
+    id: session.id,
+    status: session.status,
+    currency: session.currency.trim().toUpperCase(),
+    lineItems: session.line_items.map((line) => ({
+      id: line.id,
+      item: {
+        id: line.item.id,
+        ...(line.item.name ? { name: line.item.name } : {}),
+        ...(line.item.unit_amount !== undefined ? { unitAmount: line.item.unit_amount } : {}),
+      },
+      quantity: line.quantity,
+      ...(line.name ? { name: line.name } : {}),
+      ...(line.description ? { description: line.description } : {}),
+      ...(line.unit_amount !== undefined ? { unitAmount: line.unit_amount } : {}),
+      ...(line.product_id ? { productId: line.product_id } : {}),
+      ...(line.sku ? { sku: line.sku } : {}),
+      ...(line.category ? { category: line.category } : {}),
+      totals: (line.totals ?? []).map((total) => ({ type: total.type, amount: total.amount })),
+    })),
+    totals: session.totals.map((total) => ({ type: total.type, amount: total.amount })),
+    ...(session.protocol?.version ? { protocolVersion: session.protocol.version } : {}),
+  };
 }
 
 function parseLineItem(value: unknown): ACPLineItem {
