@@ -358,17 +358,6 @@ model PaymentOutcome {
   currency          String @db.Char(3)
   status            PaymentOutcomeStatus @default(FORWARDING)
 
-  intentDigest              String?
-  authoritativeStateDigest  String?
-  decisionId                String? @db.Uuid
-  policyId                  String? @db.Uuid
-  policyVersion             Int?
-  decisionReasonCodes       String[] @default([])
-  decisionEvaluatedAt       DateTime? @db.Timestamptz(6)
-  protocol                  String?
-  operation                 String?
-  approvalRequestId         String? @db.Uuid
-
   upstreamStatus  Int?
   responseBody    Json?
   responseHeaders Json?
@@ -395,22 +384,21 @@ model PaymentOutcome {
   @@index([mandateId, status, updatedAt])
   @@index([checkoutSessionId, status])
   @@index([status, nextReconcileAt, reconciliationLeaseExpiresAt])
-  @@index([intentDigest])
 }
 
 model AuthorizationReceipt {
-  id                String   @id @default(uuid()) @db.Uuid
-  paymentOutcomeId  String   @unique @db.Uuid
-  organizationId    String   @db.Uuid
-  userId            String   @db.Uuid
-  agentId           String   @db.Uuid
-  mandateId         String   @db.Uuid
-  intentDigest      String
-  payload           Json
-  receiptDigest     String
+  id                 String   @id @default(uuid()) @db.Uuid
+  paymentOutcomeId   String   @unique @db.Uuid
+  organizationId     String   @db.Uuid
+  userId             String   @db.Uuid
+  agentId            String   @db.Uuid
+  mandateId          String   @db.Uuid
+  intentDigest       String
+  payload            Json
+  receiptDigest      String
   integritySignature String
-  signingKeyId      String
-  issuedAt          DateTime @default(now()) @db.Timestamptz(6)
+  signingKeyId       String
+  issuedAt           DateTime @default(now()) @db.Timestamptz(6)
 
   paymentOutcome PaymentOutcome @relation(fields: [paymentOutcomeId], references: [id], onDelete: Cascade)
 
@@ -447,7 +435,7 @@ model ApprovalRequest {
   approvalData       Json?
 
   createdAt  DateTime  @default(now()) @db.Timestamptz(6)
-  expiresAt DateTime      @db.Timestamptz(6)
+  expiresAt  DateTime  @db.Timestamptz(6)
   resolvedAt DateTime? @db.Timestamptz(6)
 
   organization Organization   @relation(fields: [organizationId], references: [id])
