@@ -13,6 +13,9 @@ export interface VelocityState {
   readonly distinctMerchantsInWindow: number;
   readonly attemptedAmountLastMinute: Money;
   readonly merchantDomainsInWindow: readonly string[];
+  /** Provider-neutral counterparts for non-merchant economic rails. */
+  readonly distinctCounterpartiesInWindow?: number;
+  readonly counterpartyKeysInWindow?: readonly string[];
 }
 
 export interface EvaluationContext {
