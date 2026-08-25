@@ -5,18 +5,21 @@ import { canonicalJson, sha256Base64Url } from "../../infrastructure/crypto/cano
 import {
   AUTHORIZATION_RECEIPT_SCHEMA_VERSION,
   type AuthorizationReceiptApprovalEvidence,
-  type AuthorizationReceiptAuditEvidence,
   type AuthorizationReceiptExecutionStatus,
   type AuthorizationReceiptPayload,
   type SignedAuthorizationReceipt,
 } from "../../domain/economic/authorization-receipt.js";
-import type { EconomicOperation, EconomicProviderProtocol } from "../../domain/economic/economic-intent.types.js";
+import type {
+  EconomicOperation,
+  EconomicProviderProtocol,
+} from "../../domain/economic/economic-intent.types.js";
 import type {
   AuditSigningKeyProvider,
   AuditVerificationKeyResolver,
 } from "../audit/postgres-audit-ledger.js";
 
 const RECEIPT_SIGNATURE_TYPE = "mino.authorization.receipt.v1";
+const HUMAN_APPROVAL_GRANTED = "HUMAN_APPROVAL_GRANTED";
 
 export interface AuthorizationReceiptSqlClient {
   query<R extends QueryResultRow = QueryResultRow>(
@@ -31,17 +34,9 @@ interface OutcomeEvidenceRow extends QueryResultRow {
   userId: string;
   agentId: string;
   mandateId: string;
+  reservationId: string;
+  idempotencyKey: string;
   requestDigest: string;
-  intentDigest: string | null;
-  authoritativeStateDigest: string | null;
-  decisionId: string | null;
-  policyId: string | null;
-  policyVersion: number | null;
-  decisionReasonCodes: string[];
-  decisionEvaluatedAt: Date | null;
-  protocol: string | null;
-  operation: string | null;
-  approvalRequestId: string | null;
   checkoutSessionId: string;
   amountMinor: string;
   currency: string;
@@ -50,17 +45,30 @@ interface OutcomeEvidenceRow extends QueryResultRow {
   resolvedAt: Date | null;
 }
 
-interface ApprovalVoteEvidenceRow extends QueryResultRow {
-  approvalRequestId: string;
-  approvedAt: Date | null;
-  approverId: string | null;
-  voteApprovedAt: Date | null;
-}
-
-interface AuditEvidenceRow extends QueryResultRow {
+interface AuditAuthorizationRow extends QueryResultRow {
+  organizationId: string;
+  userId: string;
+  agentId: string;
+  mandateId: string | null;
+  decisionId: string;
+  timestamp: Date;
+  protocol: string;
+  operation: string;
+  decisionSnapshot: unknown;
+  verdict: string;
+  reasonCodes: string[];
+  policyVersion: number | null;
   chainSequence: string;
   eventDigest: string;
   chainDigest: string;
+}
+
+interface ApprovalVoteEvidenceRow extends QueryResultRow {
+  approvalRequestId: string;
+  approvalData: unknown | null;
+  approvedAt: Date | null;
+  approverId: string | null;
+  voteApprovedAt: Date | null;
 }
 
 interface ReceiptRow extends QueryResultRow {
@@ -71,6 +79,13 @@ interface ReceiptRow extends QueryResultRow {
   integritySignature: string;
   signingKeyId: string;
   issuedAt: Date;
+}
+
+interface DecisionEvidence {
+  readonly intentDigest: string;
+  readonly policyId: string;
+  readonly policyVersion: number;
+  readonly evaluatedAt: string;
 }
 
 export class AuthorizationReceiptEvidenceUnavailableError extends Error {
@@ -88,9 +103,14 @@ export interface AuthorizationReceiptIssuer {
 /**
  * Persists one immutable, signed post-execution proof per terminal PaymentOutcome.
  *
- * Receipt signing deliberately uses the durable audit signing-key family: receipts
- * are evidence, not short-lived execution capabilities. The signature is domain
- * separated from the audit chain despite sharing the rotation/verification model.
+ * The source records deliberately remain separated:
+ * - AuditLog is the durable pre-execution authorization evidence.
+ * - PaymentOutcome is the durable execution-result evidence.
+ * - AuthorizationReceipt binds the two records to one canonical intent digest.
+ *
+ * Receipt signing uses the durable audit signing-key family. The signature is
+ * domain-separated from the audit chain, so a valid audit signature cannot be
+ * replayed as a receipt signature.
  */
 export class PostgresAuthorizationReceiptService implements AuthorizationReceiptIssuer {
   public constructor(
@@ -117,21 +137,23 @@ export class PostgresAuthorizationReceiptService implements AuthorizationReceipt
     if (existing) return existing;
 
     const outcome = await this.loadOutcome(paymentOutcomeId);
-    assertTerminalOutcomeEvidence(outcome);
+    assertTerminalOutcome(outcome);
 
-    const audit = await this.loadAuditEvidence(outcome);
-    if (!audit) {
+    const authorization = await this.loadAuthorizationAudit(outcome);
+    if (!authorization) {
       throw new AuthorizationReceiptEvidenceUnavailableError(
-        "Authorization receipt requires the terminal execution audit event",
+        "Authorization receipt requires the pre-execution ALLOW audit event",
       );
     }
+    assertAuditIdentityBinding(outcome, authorization);
 
-    const approval = outcome.approvalRequestId
-      ? await this.loadApprovalEvidence(outcome.approvalRequestId)
+    const decision = decisionEvidence(authorization);
+    const approval = authorization.reasonCodes.includes(HUMAN_APPROVAL_GRANTED)
+      ? await this.loadApprovalEvidence(outcome, decision.intentDigest)
       : undefined;
-    if (outcome.approvalRequestId && !approval) {
+    if (authorization.reasonCodes.includes(HUMAN_APPROVAL_GRANTED) && !approval) {
       throw new AuthorizationReceiptEvidenceUnavailableError(
-        "Authorization receipt requires the referenced approval evidence",
+        "Authorization receipt requires intent-bound human approval evidence",
       );
     }
 
@@ -139,26 +161,26 @@ export class PostgresAuthorizationReceiptService implements AuthorizationReceipt
     const payload: AuthorizationReceiptPayload = Object.freeze({
       schemaVersion: AUTHORIZATION_RECEIPT_SCHEMA_VERSION,
       receiptId,
-      intentDigest: outcome.intentDigest!,
+      intentDigest: decision.intentDigest,
       authority: {
         organizationId: outcome.organizationId,
         userId: outcome.userId,
         agentId: outcome.agentId,
         mandateId: outcome.mandateId,
-        policyId: outcome.policyId!,
-        policyVersion: outcome.policyVersion!,
+        policyId: decision.policyId,
+        policyVersion: decision.policyVersion,
       },
       decision: {
-        decisionId: outcome.decisionId!,
+        decisionId: authorization.decisionId,
         verdict: "ALLOW",
-        reasonCodes: [...outcome.decisionReasonCodes],
-        evaluatedAt: outcome.decisionEvaluatedAt!.toISOString(),
+        reasonCodes: [...authorization.reasonCodes],
+        evaluatedAt: decision.evaluatedAt,
       },
       ...(approval ? { approval } : {}),
       execution: {
         paymentOutcomeId: outcome.id,
-        protocol: outcome.protocol as EconomicProviderProtocol,
-        operation: outcome.operation as EconomicOperation,
+        protocol: authorization.protocol as EconomicProviderProtocol,
+        operation: authorization.operation as EconomicOperation,
         status: outcome.status as AuthorizationReceiptExecutionStatus,
         providerReference: outcome.checkoutSessionId,
         amountMinor: outcome.amountMinor,
@@ -167,9 +189,12 @@ export class PostgresAuthorizationReceiptService implements AuthorizationReceipt
         resolvedAt: outcome.resolvedAt!.toISOString(),
       },
       evidence: {
-        authoritativeStateDigest: outcome.authoritativeStateDigest!,
-        requestDigest: outcome.requestDigest,
-        audit,
+        executionRequestDigest: outcome.requestDigest,
+        audit: {
+          chainSequence: authorization.chainSequence,
+          eventDigest: authorization.eventDigest,
+          chainDigest: authorization.chainDigest,
+        },
       },
       issuedAt: now.toISOString(),
     });
@@ -198,7 +223,7 @@ export class PostgresAuthorizationReceiptService implements AuthorizationReceipt
         outcome.userId,
         outcome.agentId,
         outcome.mandateId,
-        outcome.intentDigest,
+        decision.intentDigest,
         JSON.stringify(payload),
         receiptDigest,
         signature,
@@ -214,7 +239,7 @@ export class PostgresAuthorizationReceiptService implements AuthorizationReceipt
     if (!concurrent) {
       throw new Error("Authorization receipt uniqueness conflict could not be reloaded");
     }
-    if (concurrent.payload.intentDigest !== outcome.intentDigest) {
+    if (concurrent.payload.intentDigest !== decision.intentDigest) {
       throw new Error("Authorization receipt conflicts with the persisted economic intent");
     }
     return concurrent;
@@ -232,35 +257,39 @@ export class PostgresAuthorizationReceiptService implements AuthorizationReceipt
     return row;
   }
 
-  private async loadAuditEvidence(
+  /**
+   * Use the earliest ALLOW event for the reservation. A later reconciliation read
+   * may observe provider state after the consequence (for example `completed`) and
+   * therefore has a different canonical intent. The first ALLOW event is the one
+   * that actually authorized dispatch.
+   */
+  private async loadAuthorizationAudit(
     outcome: OutcomeEvidenceRow,
-  ): Promise<AuthorizationReceiptAuditEvidence | undefined> {
-    if (!outcome.decisionId) return undefined;
-    const result = await this.sql.query<AuditEvidenceRow>(
-      `select "chainSequence"::text as "chainSequence", "eventDigest", "chainDigest"
+  ): Promise<AuditAuthorizationRow | undefined> {
+    const result = await this.sql.query<AuditAuthorizationRow>(
+      `select "organizationId", "userId", "agentId", "mandateId", "decisionId",
+              "timestamp", "protocol", "operation", "decisionSnapshot", "verdict",
+              "reasonCodes", "policyVersion", "chainSequence"::text as "chainSequence",
+              "eventDigest", "chainDigest"
          from "AuditLog"
         where "organizationId" = $1::uuid
-          and "decisionId" = $2::uuid
+          and "mandateId" = $2::uuid
           and "reservationId" = $3
-        order by "chainSequence" desc
+          and "verdict" = 'ALLOW'
+        order by "chainSequence" asc
         limit 1`,
-      [outcome.organizationId, outcome.decisionId, outcome.reservationId],
+      [outcome.organizationId, outcome.mandateId, outcome.reservationId],
     );
-    const row = result.rows[0];
-    return row
-      ? {
-          chainSequence: row.chainSequence,
-          eventDigest: row.eventDigest,
-          chainDigest: row.chainDigest,
-        }
-      : undefined;
+    return result.rows[0];
   }
 
   private async loadApprovalEvidence(
-    approvalRequestId: string,
+    outcome: OutcomeEvidenceRow,
+    intentDigest: string,
   ): Promise<AuthorizationReceiptApprovalEvidence | undefined> {
     const result = await this.sql.query<ApprovalVoteEvidenceRow>(
       `select request."id" as "approvalRequestId",
+              request."approvalData" as "approvalData",
               request."resolvedAt" as "approvedAt",
               vote."approverId" as "approverId",
               vote."createdAt" as "voteApprovedAt"
@@ -268,13 +297,19 @@ export class PostgresAuthorizationReceiptService implements AuthorizationReceipt
          left join "ApprovalVote" as vote
            on vote."approvalRequestId" = request."id"
           and vote."decision" = 'APPROVE'
-        where request."id" = $1::uuid
+        where request."organizationId" = $1::uuid
+          and request."mandateId" = $2::uuid
+          and request."idempotencyKey" = $3
           and request."status" = 'APPROVED'
         order by vote."createdAt" asc, vote."id" asc`,
-      [approvalRequestId],
+      [outcome.organizationId, outcome.mandateId, outcome.idempotencyKey],
     );
     if (result.rows.length === 0) return undefined;
+
     const first = result.rows[0]!;
+    if (approvalIntentDigest(first.approvalData) !== intentDigest) {
+      return undefined;
+    }
     return {
       approvalRequestId: first.approvalRequestId,
       ...(first.approvedAt ? { approvedAt: first.approvedAt.toISOString() } : {}),
@@ -322,35 +357,72 @@ function verifyReceiptSignature(
   }
 }
 
-function assertTerminalOutcomeEvidence(outcome: OutcomeEvidenceRow): void {
+function assertTerminalOutcome(outcome: OutcomeEvidenceRow): void {
   const terminal = outcome.status === "SUCCEEDED" || outcome.status === "FAILED_DEFINITIVE";
   if (!terminal || outcome.upstreamStatus === null || !outcome.resolvedAt) {
     throw new AuthorizationReceiptEvidenceUnavailableError(
       "Authorization receipt requires a terminal payment outcome",
     );
   }
+}
 
-  const requiredStrings = [
-    outcome.intentDigest,
-    outcome.authoritativeStateDigest,
-    outcome.decisionId,
-    outcome.policyId,
-    outcome.protocol,
-    outcome.operation,
-  ];
-  if (requiredStrings.some((value) => !value?.trim()) || outcome.policyVersion === null || !outcome.decisionEvaluatedAt) {
+function assertAuditIdentityBinding(
+  outcome: OutcomeEvidenceRow,
+  audit: AuditAuthorizationRow,
+): void {
+  if (
+    audit.organizationId !== outcome.organizationId ||
+    audit.userId !== outcome.userId ||
+    audit.agentId !== outcome.agentId ||
+    audit.mandateId !== outcome.mandateId ||
+    audit.verdict !== "ALLOW"
+  ) {
     throw new AuthorizationReceiptEvidenceUnavailableError(
-      "Payment outcome predates canonical authorization-receipt evidence",
+      "Authorization audit does not bind to the terminal payment outcome",
     );
   }
-  if (!/^[A-Za-z0-9_-]{43}$/.test(outcome.intentDigest!)) {
-    throw new AuthorizationReceiptEvidenceUnavailableError("Payment outcome has an invalid intent digest");
+}
+
+function decisionEvidence(audit: AuditAuthorizationRow): DecisionEvidence {
+  if (!audit.decisionSnapshot || typeof audit.decisionSnapshot !== "object" || Array.isArray(audit.decisionSnapshot)) {
+    throw new AuthorizationReceiptEvidenceUnavailableError("Authorization decision snapshot is malformed");
   }
-  if (!/^[A-Za-z0-9_-]{43}$/.test(outcome.authoritativeStateDigest!)) {
+  const snapshot = audit.decisionSnapshot as Record<string, unknown>;
+  const intentDigest = snapshot.intentDigest;
+  const policyId = snapshot.policyId;
+  const policyVersion = snapshot.policyVersion;
+  const evaluatedAt = snapshot.evaluatedAt;
+
+  if (typeof intentDigest !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(intentDigest)) {
     throw new AuthorizationReceiptEvidenceUnavailableError(
-      "Payment outcome has an invalid authoritative-state digest",
+      "Authorization decision is not bound to a canonical economic intent",
     );
   }
+  if (typeof policyId !== "string" || !policyId.trim()) {
+    throw new AuthorizationReceiptEvidenceUnavailableError("Authorization decision is missing policy identity");
+  }
+  if (!Number.isSafeInteger(policyVersion) || policyVersion !== audit.policyVersion) {
+    throw new AuthorizationReceiptEvidenceUnavailableError("Authorization decision policy version is inconsistent");
+  }
+  const evaluatedAtIso =
+    typeof evaluatedAt === "string" && !Number.isNaN(Date.parse(evaluatedAt))
+      ? new Date(evaluatedAt).toISOString()
+      : audit.timestamp.toISOString();
+
+  return {
+    intentDigest,
+    policyId,
+    policyVersion: policyVersion as number,
+    evaluatedAt: evaluatedAtIso,
+  };
+}
+
+function approvalIntentDigest(value: unknown): string | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const digest = (value as Record<string, unknown>).intentDigest;
+  return typeof digest === "string" && /^[A-Za-z0-9_-]{43}$/.test(digest)
+    ? digest
+    : undefined;
 }
 
 function mapReceiptRow(row: ReceiptRow): SignedAuthorizationReceipt {
