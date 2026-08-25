@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
+import type { AuthorizationDecision } from "../../src/domain/economic/authorization-decision.js";
+import { bindEconomicIntent } from "../../src/domain/economic/canonical-economic-intent.js";
 import type { EconomicIntent } from "../../src/domain/economic/economic-intent.types.js";
-import { DecisionVerdict, type PolicyDecision } from "../../src/domain/evaluation/evaluation.types.js";
+import { DecisionVerdict } from "../../src/domain/evaluation/evaluation.types.js";
+import { sha256Base64Url } from "../../src/infrastructure/crypto/canonical-json.js";
 import { ACPExecutionAdapter } from "../../src/modules/proxy/acp-execution-adapter.js";
 import type { ACPMerchantClient, MerchantEndpoint } from "../../src/modules/proxy/merchant-client.js";
 
@@ -31,12 +34,13 @@ function intent(protocol: EconomicIntent["protocol"] = "ACP"): EconomicIntent {
     subtotal: { currency: "USD", minorUnits: 5_000n },
     total: { currency: "USD", minorUnits: 5_000n },
     idempotencyKey: "idem-34",
+    authoritativeStateDigest: sha256Base64Url(`provider-state-${protocol}`),
     rawPayload: { id: "cs_34" },
   };
 }
 
-function decision(): PolicyDecision {
-  return {
+function decision(economicIntent: EconomicIntent): AuthorizationDecision {
+  const base = {
     decisionId: "decision-34",
     requestId: "request-34",
     verdict: DecisionVerdict.ALLOW,
@@ -50,7 +54,16 @@ function decision(): PolicyDecision {
     eligibleForDelegationAssertion: true,
     evaluationLatencyMicros: 1,
     evaluatedAt: NOW,
-  };
+  } as const;
+  const bound = bindEconomicIntent(economicIntent, {
+    organizationId: economicIntent.organizationId,
+    userId: economicIntent.userId,
+    agentId: economicIntent.agentId,
+    mandateId: base.mandateId,
+    policyId: base.policyId,
+    policyVersion: base.policyVersion,
+  });
+  return { ...base, intentDigest: bound.intentDigest };
 }
 
 const merchant: MerchantEndpoint = {
@@ -111,7 +124,7 @@ function harness() {
             amount_minor: inputDecision.approvedAmount!.minorUnits.toString(10),
             currency: inputDecision.approvedAmount!.currency,
             idempotency_digest: "idem-digest",
-            intent_digest: "intent-digest",
+            intent_digest: inputDecision.intentDigest,
           },
         };
       },
@@ -138,9 +151,9 @@ describe("ACPExecutionAdapter", () => {
   it("issues the neutral grant before forwarding through ACP adapter #1", async () => {
     const h = harness();
     const economicIntent = intent();
-    const policyDecision = decision();
+    const authorizationDecision = decision(economicIntent);
 
-    const providerArtifact = h.adapter.issue(economicIntent, policyDecision, NOW);
+    const providerArtifact = h.adapter.issue(economicIntent, authorizationDecision, NOW);
     expect(providerArtifact).toBe("legacy-acp-delegation");
     expect(h.state().grantCalls).toBe(1);
     expect(h.state().delegationCalls).toBe(1);
@@ -185,7 +198,8 @@ describe("ACPExecutionAdapter", () => {
 
   it("refuses a prepared grant that expires before provider forwarding", async () => {
     const h = harness();
-    const providerArtifact = h.adapter.issue(intent(), decision(), NOW);
+    const economicIntent = intent();
+    const providerArtifact = h.adapter.issue(economicIntent, decision(economicIntent), NOW);
     h.setClock(new Date(NOW.getTime() + 46_000));
 
     await expect(
@@ -208,7 +222,7 @@ describe("ACPExecutionAdapter", () => {
   it("fails closed when the neutral intent targets another provider", async () => {
     const h = harness();
     const economicIntent = intent("STRIPE");
-    const policyDecision = decision();
+    const authorizationDecision = decision(economicIntent);
     const grant = {
       token: "grant",
       claims: {
@@ -221,24 +235,24 @@ describe("ACPExecutionAdapter", () => {
         organization_id: economicIntent.organizationId,
         user_id: economicIntent.userId,
         agent_id: economicIntent.agentId,
-        mandate_id: policyDecision.mandateId,
-        policy_id: policyDecision.policyId,
-        policy_version: policyDecision.policyVersion,
-        decision_id: policyDecision.decisionId,
+        mandate_id: authorizationDecision.mandateId,
+        policy_id: authorizationDecision.policyId,
+        policy_version: authorizationDecision.policyVersion,
+        decision_id: authorizationDecision.decisionId,
         request_id: economicIntent.requestId,
         operation: economicIntent.operation,
         counterparty: economicIntent.counterparty!,
         amount_minor: "5000",
         currency: "USD",
         idempotency_digest: "idem-digest",
-        intent_digest: "intent-digest",
+        intent_digest: authorizationDecision.intentDigest,
       },
     };
 
     await expect(
       h.adapter.execute({
         intent: economicIntent,
-        decision: policyDecision,
+        decision: authorizationDecision,
         grant,
         now: NOW,
         context: {
@@ -256,5 +270,19 @@ describe("ACPExecutionAdapter", () => {
     ).rejects.toThrow("refuses non-ACP economic intent");
 
     expect(h.state().completeCalls).toBe(0);
+  });
+
+  it("refuses execution when provider-authoritative state no longer matches the decision", () => {
+    const h = harness();
+    const original = intent();
+    const authorizationDecision = decision(original);
+    const changed = {
+      ...original,
+      authoritativeStateDigest: sha256Base64Url("changed-provider-state"),
+    };
+
+    expect(() => h.adapter.issue(changed, authorizationDecision, NOW)).toThrow(
+      "Authorization decision does not bind to the requested EconomicIntent",
+    );
   });
 });
