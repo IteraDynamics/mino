@@ -522,6 +522,7 @@ function parseOperation(value: string): EconomicOperation {
     case "UPDATE_CHECKOUT_SESSION":
     case "COMPLETE_CHECKOUT":
     case "AUTHORIZE_PAYMENT":
+    case "PAY_INVOICE":
       return value;
     default:
       throw new AuthorizationReceiptEvidenceUnavailableError(
