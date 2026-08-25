@@ -1,5 +1,10 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import type { SignedAuthorizationReceipt } from "../domain/economic/authorization-receipt.js";
+import { DecisionVerdict } from "../domain/evaluation/evaluation.types.js";
+import { AgentRequestError } from "../modules/agents/agent-request-verifier.js";
+import { ApprovalRequestConflictError } from "../modules/approvals/durable-approval.service.js";
+import { MandateTokenError } from "../modules/mandates/mandate-token.service.js";
 import {
   CheckoutProxyService,
   IdempotencyConflictError,
@@ -7,14 +12,17 @@ import {
   ProxyAuthenticationError,
   ProxyProtocolError,
   ProxyUpstreamError,
+  type CheckoutProxyResult,
 } from "../modules/proxy/checkout-proxy.service.js";
-import { DecisionVerdict } from "../domain/evaluation/evaluation.types.js";
-import { MandateTokenError } from "../modules/mandates/mandate-token.service.js";
-import { AgentRequestError } from "../modules/agents/agent-request-verifier.js";
-import { ApprovalRequestConflictError } from "../modules/approvals/durable-approval.service.js";
+import type { AuthorizationReceiptIssuer } from "../modules/receipts/authorization-receipt.service.js";
+import {
+  AuthorizationReceiptPendingError,
+  issueTerminalAuthorizationReceipt,
+} from "./authorization-receipt-response.js";
 
 export interface ACPRoutesOptions {
   readonly proxy: CheckoutProxyService;
+  readonly receipts?: AuthorizationReceiptIssuer;
   readonly now?: () => Date;
 }
 
@@ -39,6 +47,7 @@ export async function registerACPRoutes(
         const security = parseSecurityHeaders(request);
         const idempotencyKey = requiredHeader(request, "idempotency-key");
         const requestId = randomUUID();
+        const requestNow = now();
         const result = await options.proxy.createCheckout({
           merchantId: request.params.merchantId,
           requestId,
@@ -46,7 +55,7 @@ export async function registerACPRoutes(
           path: request.url,
           body: request.body,
           security,
-          now: now(),
+          now: requestNow,
         });
         return sendDecision(reply, result);
       } catch (error) {
@@ -62,6 +71,7 @@ export async function registerACPRoutes(
         const security = parseSecurityHeaders(request);
         const idempotencyKey = requiredHeader(request, "idempotency-key");
         const requestId = randomUUID();
+        const requestNow = now();
         const result = await options.proxy.completeCheckout({
           merchantId: request.params.merchantId,
           checkoutSessionId: request.params.checkoutSessionId,
@@ -70,9 +80,14 @@ export async function registerACPRoutes(
           path: request.url,
           body: request.body,
           security,
-          now: now(),
+          now: requestNow,
         });
-        return sendDecision(reply, result);
+        const receipt = await issueTerminalAuthorizationReceipt(
+          result,
+          options.receipts,
+          requestNow,
+        );
+        return sendDecision(reply, result, receipt);
       } catch (error) {
         return sendError(reply, error);
       }
@@ -118,7 +133,8 @@ function optionalHeader(request: FastifyRequest, name: string): string | undefin
 
 function sendDecision(
   reply: FastifyReply,
-  result: Awaited<ReturnType<CheckoutProxyService["completeCheckout"]>>,
+  result: CheckoutProxyResult,
+  receipt?: SignedAuthorizationReceipt,
 ) {
   const status =
     result.decision.verdict === DecisionVerdict.ALLOW
@@ -132,14 +148,13 @@ function sendDecision(
     ...(result.checkoutSessionId ? { checkout_session_id: result.checkoutSessionId } : {}),
     ...(result.approvalRequestId ? { approval_request_id: result.approvalRequestId } : {}),
     ...(result.paymentOutcomeId ? { payment_outcome_id: result.paymentOutcomeId } : {}),
+    ...(receipt ? { authorization_receipt: receipt } : {}),
     ...(result.replayed ? { idempotent_replayed: true } : {}),
     ...(result.upstream ? { upstream: result.upstream.body } : {}),
   });
 }
 
-function serializeDecision(
-  decision: Awaited<ReturnType<CheckoutProxyService["completeCheckout"]>>["decision"],
-) {
+function serializeDecision(decision: CheckoutProxyResult["decision"]) {
   return JSON.parse(
     JSON.stringify(decision, (_key, value) =>
       typeof value === "bigint" ? value.toString(10) : value,
@@ -148,6 +163,15 @@ function serializeDecision(
 }
 
 function sendError(reply: FastifyReply, error: unknown) {
+  if (error instanceof AuthorizationReceiptPendingError) {
+    reply.header("Retry-After", "2");
+    return reply.code(409).send({
+      error: "AUTHORIZATION_RECEIPT_PENDING",
+      reason: error.message,
+      payment_outcome_id: error.paymentOutcomeId,
+    });
+  }
+
   if (
     error instanceof ProxyAuthenticationError ||
     error instanceof MandateTokenError ||

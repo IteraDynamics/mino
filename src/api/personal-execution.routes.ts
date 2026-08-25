@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import type { SignedAuthorizationReceipt } from "../domain/economic/authorization-receipt.js";
 import { DecisionVerdict } from "../domain/evaluation/evaluation.types.js";
 import { AgentRequestError } from "../modules/agents/agent-request-verifier.js";
 import { ApprovalRequestConflictError } from "../modules/approvals/durable-approval.service.js";
@@ -16,6 +17,11 @@ import {
   ProxyUpstreamError,
   type CheckoutProxyResult,
 } from "../modules/proxy/checkout-proxy.service.js";
+import type { AuthorizationReceiptIssuer } from "../modules/receipts/authorization-receipt.service.js";
+import {
+  AuthorizationReceiptPendingError,
+  issueTerminalAuthorizationReceipt,
+} from "./authorization-receipt-response.js";
 
 interface CompleteParams {
   merchantId: string;
@@ -24,6 +30,7 @@ interface CompleteParams {
 
 export interface PersonalExecutionRouteDependencies {
   readonly execution: Pick<PersonalACPExecutionService, "completeCheckout">;
+  readonly receipts?: AuthorizationReceiptIssuer;
   readonly now?: () => Date;
 }
 
@@ -38,6 +45,7 @@ export async function registerPersonalExecutionRoutes(
     async (request, reply) => {
       try {
         const security = parseMinoSecurityHeaders(request);
+        const requestNow = now();
         const result = await dependencies.execution.completeCheckout({
           merchantId: request.params.merchantId,
           checkoutSessionId: request.params.checkoutSessionId,
@@ -46,9 +54,14 @@ export async function registerPersonalExecutionRoutes(
           path: request.url,
           body: request.body,
           security,
-          now: now(),
+          now: requestNow,
         });
-        return sendDecision(reply, result);
+        const receipt = await issueTerminalAuthorizationReceipt(
+          result,
+          dependencies.receipts,
+          requestNow,
+        );
+        return sendDecision(reply, result, receipt);
       } catch (error) {
         return sendError(reply, error);
       }
@@ -79,7 +92,11 @@ function requiredHeader(request: FastifyRequest, name: string): string {
   return normalized;
 }
 
-function sendDecision(reply: FastifyReply, result: CheckoutProxyResult) {
+function sendDecision(
+  reply: FastifyReply,
+  result: CheckoutProxyResult,
+  receipt?: SignedAuthorizationReceipt,
+) {
   const status =
     result.decision.verdict === DecisionVerdict.ALLOW
       ? result.upstream?.status ?? 200
@@ -96,12 +113,22 @@ function sendDecision(reply: FastifyReply, result: CheckoutProxyResult) {
     ...(result.checkoutSessionId ? { checkout_session_id: result.checkoutSessionId } : {}),
     ...(result.approvalRequestId ? { approval_request_id: result.approvalRequestId } : {}),
     ...(result.paymentOutcomeId ? { payment_outcome_id: result.paymentOutcomeId } : {}),
+    ...(receipt ? { authorization_receipt: receipt } : {}),
     ...(result.replayed ? { idempotent_replayed: true } : {}),
     ...(result.upstream ? { upstream: result.upstream.body } : {}),
   });
 }
 
 function sendError(reply: FastifyReply, error: unknown) {
+  if (error instanceof AuthorizationReceiptPendingError) {
+    reply.header("retry-after", "2");
+    return reply.code(409).send({
+      error: "AUTHORIZATION_RECEIPT_PENDING",
+      reason: error.message,
+      payment_outcome_id: error.paymentOutcomeId,
+    });
+  }
+
   if (error instanceof PersonalExecutionCredentialUnavailableError) {
     return reply.code(503).send({
       error: "EXECUTION_TARGET_UNAVAILABLE",
