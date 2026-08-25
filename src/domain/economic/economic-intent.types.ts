@@ -123,7 +123,7 @@ export function economicAmount(intent: EconomicIntent): Money {
 }
 
 export function economicItems(intent: EconomicIntent): readonly EconomicLineItem[] {
-  return intent.economicValue?.items ?? intent.cart;
+  return intent.economicValue?.items ?? intent.cart ?? [];
 }
 
 export function checkoutEconomicBreakdown(
