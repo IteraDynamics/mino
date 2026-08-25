@@ -32,6 +32,7 @@ export interface ApprovalRequestRecord {
   readonly requestId: string;
   readonly idempotencyKey: string;
   readonly requestDigest: string;
+  readonly intentDigest?: string;
   readonly policyVersion: number;
   readonly merchantId: string;
   readonly merchantDomain: string;
@@ -61,6 +62,7 @@ export interface BeginApprovalRequestInput {
   readonly requestId: string;
   readonly idempotencyKey: string;
   readonly requestDigest: string;
+  readonly intentDigest?: string;
   readonly policyVersion: number;
   readonly merchantId: string;
   readonly merchantDomain: string;
@@ -216,13 +218,13 @@ export class PostgresApprovalRequestStore implements ApprovalRequestStore {
          "decisionId", "requestId", "idempotencyKey", "requestDigest", "policyVersion",
          "merchantId", "merchantDomain", "checkoutSessionId", "requestedPayload",
          "sessionSnapshot", "spendSnapshot", "reasonCodes", "amountMinor", "currency",
-         "status", "requiredSignatures", "createdAt", "expiresAt"
+         "status", "requiredSignatures", "approvalData", "createdAt", "expiresAt"
        ) values (
          $1::uuid, $2::uuid, $3::uuid, $4::uuid, $5::uuid,
          $6, $7, $8, $9, $10,
          $11, $12, $13, $14::jsonb,
          $15::jsonb, $16::jsonb, $17::text[], $18::bigint, $19,
-         'PENDING', $20, $21, $22
+         'PENDING', $20, $21::jsonb, $22, $23
        )
        on conflict ("organizationId", "idempotencyKey") do nothing
        returning *`,
@@ -247,6 +249,7 @@ export class PostgresApprovalRequestStore implements ApprovalRequestStore {
         input.amountMinor.toString(10),
         input.currency.toUpperCase(),
         input.requiredSignatures,
+        input.intentDigest ? JSON.stringify({ intentDigest: input.intentDigest }) : null,
         input.now,
         input.expiresAt,
       ],
@@ -265,9 +268,11 @@ export class PostgresApprovalRequestStore implements ApprovalRequestStore {
       throw new Error("Approval request uniqueness conflict could not be reloaded");
     }
 
+    const intentMatches =
+      input.intentDigest === undefined || existing.intentDigest === input.intentDigest;
     return {
       kind:
-        existing.requestDigest === input.requestDigest
+        existing.requestDigest === input.requestDigest && intentMatches
           ? BeginApprovalRequestKind.EXISTING
           : BeginApprovalRequestKind.CONFLICT,
       request: existing,
@@ -438,6 +443,7 @@ function mapRequestRow(
   row: ApprovalRequestRow,
   votes: readonly ApprovalVoteRow[],
 ): ApprovalRequestRecord {
+  const intentDigest = approvalIntentDigest(row.approvalData);
   return {
     id: row.id,
     organizationId: row.organizationId,
@@ -448,6 +454,7 @@ function mapRequestRow(
     requestId: row.requestId,
     idempotencyKey: row.idempotencyKey,
     requestDigest: row.requestDigest,
+    ...(intentDigest ? { intentDigest } : {}),
     policyVersion: row.policyVersion,
     merchantId: row.merchantId,
     merchantDomain: row.merchantDomain,
@@ -466,6 +473,14 @@ function mapRequestRow(
     ...(row.resolvedAt ? { resolvedAt: row.resolvedAt } : {}),
     votes: votes.map(mapVoteRow),
   };
+}
+
+function approvalIntentDigest(value: unknown): string | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const intentDigest = (value as Record<string, unknown>).intentDigest;
+  return typeof intentDigest === "string" && /^[A-Za-z0-9_-]{43}$/.test(intentDigest)
+    ? intentDigest
+    : undefined;
 }
 
 function mapVoteRow(row: ApprovalVoteRow): ApprovalVoteRecord {
