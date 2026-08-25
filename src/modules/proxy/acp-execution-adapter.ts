@@ -205,8 +205,10 @@ export class ACPExecutionAdapter
 }
 
 function requireACPCheckoutIntent(intent: EconomicIntent): CheckoutIntent {
+  if (intent.protocol !== "ACP") {
+    throw new Error("ACP execution adapter refuses non-ACP economic intent");
+  }
   if (
-    intent.protocol !== "ACP" ||
     intent.economicValue !== undefined ||
     intent.cart === undefined ||
     intent.subtotal === undefined ||
