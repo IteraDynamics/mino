@@ -30,8 +30,9 @@ export interface PersonalProductionSurface {
 /**
  * Compose the opt-in Personal control + execution adapter surface onto the already
  * created Mino application. Personal reuses the exact production authorization
- * proxy and durable approval service. Upstream merchant credentials are resolved
- * server-side from Mino's credential provider and are never exposed to OpenClaw.
+ * proxy, durable approval service, and signed authorization-receipt issuer.
+ * Upstream merchant credentials are resolved server-side from Mino's credential
+ * provider and are never exposed to OpenClaw.
  */
 export async function registerPersonalProductionSurface(
   app: FastifyInstance,
@@ -47,6 +48,9 @@ export async function registerPersonalProductionSurface(
   const runtime = getAppRuntimeDependencies(app);
   if (!runtime.approvals) {
     throw new Error("Mino Personal owner approvals require the durable approval service");
+  }
+  if (!runtime.receipts) {
+    throw new Error("Mino Personal execution requires authorization receipt issuance");
   }
 
   const pool = new Pool({
@@ -97,7 +101,11 @@ export async function registerPersonalProductionSurface(
       approvals: ownerApprovals,
       authenticator,
     });
-    await registerPersonalExecutionRoutes(app, { execution, now });
+    await registerPersonalExecutionRoutes(app, {
+      execution,
+      receipts: runtime.receipts,
+      now,
+    });
 
     return {
       async close(): Promise<void> {
