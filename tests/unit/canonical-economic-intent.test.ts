@@ -108,9 +108,11 @@ describe("canonical EconomicIntent", () => {
   });
 
   it("fails closed without provider-authoritative state evidence", () => {
+    const withEvidence = intent();
+    const { authoritativeStateDigest: _omitted, ...withoutEvidence } = withEvidence;
     expect(() =>
       bindEconomicIntent(
-        intent({ authoritativeStateDigest: undefined }),
+        withoutEvidence as EconomicIntent,
         authorityReferenceFromMandate(mandate),
       ),
     ).toThrow(/authoritative-state digest/i);
