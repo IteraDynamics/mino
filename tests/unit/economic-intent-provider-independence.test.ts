@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { CheckoutIntent } from "../../src/domain/checkout/checkout.types.js";
 import type { EconomicIntent } from "../../src/domain/economic/economic-intent.types.js";
 import { DecisionVerdict } from "../../src/domain/evaluation/evaluation.types.js";
 import { ApprovalMode, type AgentSpendMandate } from "../../src/domain/mandates/mandate.types.js";
@@ -35,7 +36,7 @@ function mandate(): AgentSpendMandate {
 function economicIntent(
   protocol: EconomicIntent["protocol"],
   rawPayload: unknown,
-): EconomicIntent {
+): CheckoutIntent {
   return {
     requestId: "request-1",
     protocol,
@@ -107,7 +108,7 @@ describe("EconomicIntent provider independence", () => {
 
   it("still changes policy meaning when normalized economic facts change", () => {
     const allowed = evaluate(economicIntent("ACP", { id: "cs_1" }));
-    const restricted = evaluate({
+    const restricted: CheckoutIntent = {
       ...economicIntent("CUSTOM", { arbitrary: true }),
       cart: [
         {
@@ -120,9 +121,9 @@ describe("EconomicIntent provider independence", () => {
           totalPrice: { currency: "USD", minorUnits: 5_000n },
         },
       ],
-    });
+    };
 
     expect(allowed.verdict).toBe(DecisionVerdict.ALLOW);
-    expect(restricted.verdict).toBe(DecisionVerdict.BLOCK);
+    expect(evaluate(restricted).verdict).toBe(DecisionVerdict.BLOCK);
   });
 });
