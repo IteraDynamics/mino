@@ -7,6 +7,7 @@ import type {
   ACPMerchantClient,
   MerchantRegistry,
 } from "../proxy/merchant-client.js";
+import type { AuthorizationReceiptBackfiller } from "../receipts/authorization-receipt.service.js";
 import type { AuthorizationReservations } from "../spending/authorization-reservation.service.js";
 import type {
   PaymentOutcomeRecord,
@@ -23,6 +24,7 @@ export interface ProviderNeutralPaymentReconcilerDependencies {
   readonly outcomes: ReconciliationPaymentOutcomeStore;
   readonly reservations: AuthorizationReservations;
   readonly reconciliation: EconomicReconciliationAdapter;
+  readonly receipts?: AuthorizationReceiptBackfiller;
 }
 
 /**
@@ -37,6 +39,7 @@ export interface ACPPaymentReconcilerCompatibilityDependencies {
   readonly merchantClient: ACPMerchantClient;
   readonly credentials: EconomicProviderCredentialProvider;
   readonly generateRequestId: () => string;
+  readonly receipts?: AuthorizationReceiptBackfiller;
 }
 
 export type BackgroundPaymentReconcilerDependencies =
@@ -85,6 +88,7 @@ export class BackgroundPaymentReconciler {
               credentials: deps.credentials,
               generateRequestId: deps.generateRequestId,
             }),
+            ...(deps.receipts ? { receipts: deps.receipts } : {}),
           };
 
     this.batchSize = options.batchSize ?? DEFAULT_BATCH_SIZE;
@@ -133,6 +137,18 @@ export class BackgroundPaymentReconciler {
         } else {
           deferred += 1;
         }
+      } catch {
+        errors += 1;
+      }
+    }
+
+    if (this.deps.receipts) {
+      try {
+        const backfill = await this.deps.receipts.issueMissingTerminalReceipts(
+          now,
+          this.batchSize,
+        );
+        errors += backfill.errors;
       } catch {
         errors += 1;
       }
