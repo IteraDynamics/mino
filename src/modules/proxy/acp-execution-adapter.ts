@@ -1,6 +1,7 @@
 import type { AuthorizationDecision } from "../../domain/economic/authorization-decision.js";
 import type { SignedAuthorizationGrant } from "../../domain/economic/authorization-grant.types.js";
 import type { CheckoutIntent } from "../../domain/checkout/checkout.types.js";
+import type { PolicyDecision } from "../../domain/evaluation/evaluation.types.js";
 import type { AuthorizationGrantIssuer } from "../authorization/authorization-grant.service.js";
 import type {
   EconomicExecutionAdapter,
@@ -46,13 +47,17 @@ export class ACPExecutionAdapter
     private readonly clock: () => Date = () => new Date(),
   ) {}
 
-  public issue(intent: CheckoutIntent, decision: AuthorizationDecision, now: Date): string {
+  public issue(intent: CheckoutIntent, decision: PolicyDecision, now: Date): string {
+    if (!("intentDigest" in decision) || typeof decision.intentDigest !== "string") {
+      throw new Error("ACP execution requires an EconomicIntent-bound authorization decision");
+    }
+    const boundDecision = decision as AuthorizationDecision;
     this.removeExpired(now);
-    const grant = this.grants.issue(intent, decision, now);
+    const grant = this.grants.issue(intent, boundDecision, now);
     const delegationAssertion = this.legacyDelegation.issue(intent, decision, now);
     this.prepared.set(delegationAssertion, {
       intent,
-      decision,
+      decision: boundDecision,
       grant,
       delegationAssertion,
     });
