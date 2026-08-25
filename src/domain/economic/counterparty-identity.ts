@@ -1,4 +1,4 @@
-export type EconomicCounterpartyKind = "MERCHANT" | "ACCOUNT" | "WALLET" | "OTHER";
+export type EconomicCounterpartyKind = "MERCHANT" | "PAYEE" | "ACCOUNT" | "WALLET" | "OTHER";
 
 export type EconomicCounterpartyIdentifierScheme =
   | "DOMAIN"
@@ -23,6 +23,12 @@ export interface EconomicCounterpartyIdentifier {
 export interface EconomicCounterpartyIdentity {
   readonly kind: EconomicCounterpartyKind;
   readonly identifiers: readonly EconomicCounterpartyIdentifier[];
+}
+
+/** Provider-neutral allowlist selector carried by delegated authority. */
+export interface EconomicCounterpartySelector {
+  readonly kind?: EconomicCounterpartyKind;
+  readonly identifier: EconomicCounterpartyIdentifier;
 }
 
 /** Existing ACP/checkout merchant projection retained during the transition. */
@@ -89,7 +95,7 @@ export function resolveEconomicCounterparty(
 
 /**
  * Project the currently supported merchant policy selectors from a generalized
- * counterparty. Non-merchant or ambiguous identities return undefined so current
+ * counterparty. Non-merchant or ambiguous identities return undefined so legacy
  * merchant-scoped mandates fail closed instead of silently authorizing them.
  */
 export function merchantProjectionFromCounterparty(
@@ -124,6 +130,36 @@ export function resolveMerchantPolicyProjection(
   return counterparty
     ? merchantProjectionFromCounterparty(counterparty)
     : undefined;
+}
+
+/** True only when normalized counterparty identity satisfies the authority selector. */
+export function counterpartyMatchesSelector(
+  counterparty: EconomicCounterpartyIdentity,
+  selector: EconomicCounterpartySelector,
+): boolean {
+  if (!isUsableCounterparty(counterparty)) return false;
+  if (selector.kind && selector.kind !== counterparty.kind) return false;
+
+  const expected = selector.identifier;
+  return counterparty.identifiers.some(
+    (actual) =>
+      actual.scheme === expected.scheme &&
+      actual.value.trim() === expected.value.trim() &&
+      (actual.namespace?.trim() ?? "") === (expected.namespace?.trim() ?? ""),
+  );
+}
+
+/** Stable non-secret key suitable for provider-neutral distinct-counterparty velocity state. */
+export function economicCounterpartyKey(counterparty: EconomicCounterpartyIdentity): string {
+  if (!isUsableCounterparty(counterparty)) {
+    throw new Error("Economic counterparty key requires usable normalized identity");
+  }
+  const identifiers = [...counterparty.identifiers]
+    .map((identifier) =>
+      `${identifier.scheme}:${identifier.namespace?.trim() ?? ""}:${identifier.value.trim()}`,
+    )
+    .sort();
+  return `${counterparty.kind}|${identifiers.join("|")}`;
 }
 
 function identifierValues(

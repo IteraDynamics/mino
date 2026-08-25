@@ -2,15 +2,18 @@ import { canonicalJson, sha256Base64Url } from "../../infrastructure/crypto/cano
 import type { AgentSpendMandate } from "../mandates/mandate.types.js";
 import type { Money } from "../money.js";
 import { resolveEconomicCounterparty } from "./counterparty-identity.js";
-import type {
-  EconomicCounterpartyIdentity,
-  EconomicIntent,
-  EconomicLineItem,
-  EconomicOperation,
-  EconomicProviderProtocol,
+import {
+  checkoutEconomicBreakdown,
+  economicAmount,
+  economicItems,
+  type EconomicCounterpartyIdentity,
+  type EconomicIntent,
+  type EconomicLineItem,
+  type EconomicOperation,
+  type EconomicProviderProtocol,
 } from "./economic-intent.types.js";
 
-export const ECONOMIC_INTENT_SCHEMA_VERSION = 1 as const;
+export const ECONOMIC_INTENT_SCHEMA_VERSION = 2 as const;
 
 /** Facts that may exist around an economic action. Only authoritative/derived facts belong in the canonical digest. */
 export type EconomicFactSource = "PROVIDER_AUTHORITATIVE" | "MINO_DERIVED" | "AGENT_ASSERTED";
@@ -35,11 +38,16 @@ export interface CanonicalEconomicIntent {
   };
   readonly counterparty: EconomicCounterpartyIdentity;
   readonly economics: {
-    readonly cart: readonly EconomicLineItem[];
-    readonly subtotal: Money;
-    readonly tax?: Money;
-    readonly shipping?: Money;
-    readonly total: Money;
+    /** Total economic value that Mino authorizes, independent of provider/rail shape. */
+    readonly amount: Money;
+    /** Optional normalized economic components. Empty for value transfers without line items. */
+    readonly items: readonly EconomicLineItem[];
+    /** Checkout-only decomposition retained as evidence, not required by Core semantics. */
+    readonly checkoutBreakdown?: {
+      readonly subtotal: Money;
+      readonly tax?: Money;
+      readonly shipping?: Money;
+    };
   };
   /** Raw idempotency keys are transport identifiers; canonical intent binds only their digest. */
   readonly idempotencyDigest: string;
@@ -86,6 +94,10 @@ export function bindEconomicIntent(
     throw new Error("EconomicIntent requires a SHA-256 base64url authoritative-state digest");
   }
 
+  const amount = economicAmount(intent);
+  const items = economicItems(intent);
+  const checkoutBreakdown = checkoutEconomicBreakdown(intent);
+
   const canonicalIntent: CanonicalEconomicIntent = deepFreeze({
     schemaVersion: ECONOMIC_INTENT_SCHEMA_VERSION,
     authority: { ...authority },
@@ -96,11 +108,19 @@ export function bindEconomicIntent(
     },
     counterparty: cloneCounterparty(counterparty),
     economics: {
-      cart: intent.cart.map(cloneLineItem),
-      subtotal: cloneMoney(intent.subtotal),
-      ...(intent.tax ? { tax: cloneMoney(intent.tax) } : {}),
-      ...(intent.shipping ? { shipping: cloneMoney(intent.shipping) } : {}),
-      total: cloneMoney(intent.total),
+      amount: cloneMoney(amount),
+      items: items.map(cloneLineItem),
+      ...(checkoutBreakdown
+        ? {
+            checkoutBreakdown: {
+              subtotal: cloneMoney(checkoutBreakdown.subtotal),
+              ...(checkoutBreakdown.tax ? { tax: cloneMoney(checkoutBreakdown.tax) } : {}),
+              ...(checkoutBreakdown.shipping
+                ? { shipping: cloneMoney(checkoutBreakdown.shipping) }
+                : {}),
+            },
+          }
+        : {}),
     },
     idempotencyDigest: sha256Base64Url(intent.idempotencyKey),
   });

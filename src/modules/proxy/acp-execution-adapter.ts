@@ -2,6 +2,7 @@ import type { AuthorizationDecision } from "../../domain/economic/authorization-
 import type { SignedAuthorizationGrant } from "../../domain/economic/authorization-grant.types.js";
 import { bindEconomicIntent } from "../../domain/economic/canonical-economic-intent.js";
 import type { CheckoutIntent } from "../../domain/checkout/checkout.types.js";
+import type { EconomicIntent } from "../../domain/economic/economic-intent.types.js";
 import type { PolicyDecision } from "../../domain/evaluation/evaluation.types.js";
 import type { AuthorizationGrantIssuer } from "../authorization/authorization-grant.service.js";
 import type {
@@ -48,17 +49,18 @@ export class ACPExecutionAdapter
     private readonly clock: () => Date = () => new Date(),
   ) {}
 
-  public issue(intent: CheckoutIntent, decision: PolicyDecision, now: Date): string {
+  public issue(intent: EconomicIntent, decision: PolicyDecision, now: Date): string {
+    const checkoutIntent = requireACPCheckoutIntent(intent);
     if (!("intentDigest" in decision) || typeof decision.intentDigest !== "string") {
       throw new Error("ACP execution requires an EconomicIntent-bound authorization decision");
     }
     const boundDecision = decision as AuthorizationDecision;
-    this.assertDecisionMatchesIntent(intent, boundDecision);
+    this.assertDecisionMatchesIntent(checkoutIntent, boundDecision);
     this.removeExpired(now);
-    const grant = this.grants.issue(intent, boundDecision, now);
-    const delegationAssertion = this.legacyDelegation.issue(intent, decision, now);
+    const grant = this.grants.issue(checkoutIntent, boundDecision, now);
+    const delegationAssertion = this.legacyDelegation.issue(checkoutIntent, decision, now);
     this.prepared.set(delegationAssertion, {
-      intent,
+      intent: checkoutIntent,
       decision: boundDecision,
       grant,
       delegationAssertion,
@@ -69,11 +71,9 @@ export class ACPExecutionAdapter
   public async execute(
     input: EconomicExecutionInput<ACPExecutionContext>,
   ): Promise<MerchantResponse> {
-    if (input.intent.protocol !== this.protocol) {
-      throw new Error("ACP execution adapter refuses non-ACP economic intent");
-    }
-    this.assertDecisionMatchesIntent(input.intent, input.decision);
-    this.assertGrantBinding(input.grant, input.intent, input.decision);
+    const intent = requireACPCheckoutIntent(input.intent);
+    this.assertDecisionMatchesIntent(intent, input.decision);
+    this.assertGrantBinding(input.grant, intent, input.decision);
 
     return this.client.completeCheckout(
       input.context.merchant,
@@ -202,4 +202,19 @@ export class ACPExecutionAdapter
       }
     }
   }
+}
+
+function requireACPCheckoutIntent(intent: EconomicIntent): CheckoutIntent {
+  if (intent.protocol !== "ACP") {
+    throw new Error("ACP execution adapter refuses non-ACP economic intent");
+  }
+  if (
+    intent.economicValue !== undefined ||
+    intent.cart === undefined ||
+    intent.subtotal === undefined ||
+    intent.total === undefined
+  ) {
+    throw new Error("ACP execution adapter refuses non-checkout economic intent");
+  }
+  return intent as CheckoutIntent;
 }
