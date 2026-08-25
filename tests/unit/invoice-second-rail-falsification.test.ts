@@ -120,7 +120,7 @@ describe("second-rail invoice falsification", () => {
       },
       approval: {
         approvalRequestId: approval.id,
-        approvedAt: approval.resolvedAt?.toISOString(),
+        approvedAt: approval.resolvedAt!.toISOString(),
         approvers: [{ approverId: "owner-1", approvedAt: approval.resolvedAt!.toISOString() }],
       },
       execution: {
