@@ -1,5 +1,6 @@
 import type { AuthorizationDecision } from "../../domain/economic/authorization-decision.js";
 import type { SignedAuthorizationGrant } from "../../domain/economic/authorization-grant.types.js";
+import { bindEconomicIntent } from "../../domain/economic/canonical-economic-intent.js";
 import type { CheckoutIntent } from "../../domain/checkout/checkout.types.js";
 import type { PolicyDecision } from "../../domain/evaluation/evaluation.types.js";
 import type { AuthorizationGrantIssuer } from "../authorization/authorization-grant.service.js";
@@ -52,6 +53,7 @@ export class ACPExecutionAdapter
       throw new Error("ACP execution requires an EconomicIntent-bound authorization decision");
     }
     const boundDecision = decision as AuthorizationDecision;
+    this.assertDecisionMatchesIntent(intent, boundDecision);
     this.removeExpired(now);
     const grant = this.grants.issue(intent, boundDecision, now);
     const delegationAssertion = this.legacyDelegation.issue(intent, decision, now);
@@ -70,6 +72,7 @@ export class ACPExecutionAdapter
     if (input.intent.protocol !== this.protocol) {
       throw new Error("ACP execution adapter refuses non-ACP economic intent");
     }
+    this.assertDecisionMatchesIntent(input.intent, input.decision);
     this.assertGrantBinding(input.grant, input.intent, input.decision);
 
     return this.client.completeCheckout(
@@ -155,6 +158,23 @@ export class ACPExecutionAdapter
     payload?: unknown,
   ): Promise<MerchantResponse> {
     return this.client.cancelCheckout(merchant, checkoutSessionId, headers, payload);
+  }
+
+  private assertDecisionMatchesIntent(
+    intent: CheckoutIntent,
+    decision: AuthorizationDecision,
+  ): void {
+    const rebound = bindEconomicIntent(intent, {
+      organizationId: intent.organizationId,
+      userId: intent.userId,
+      agentId: intent.agentId,
+      mandateId: decision.mandateId,
+      policyId: decision.policyId,
+      policyVersion: decision.policyVersion,
+    });
+    if (rebound.intentDigest !== decision.intentDigest) {
+      throw new Error("Authorization decision does not bind to the requested EconomicIntent");
+    }
   }
 
   private assertGrantBinding(
