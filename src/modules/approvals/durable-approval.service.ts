@@ -82,6 +82,7 @@ export class DurableHumanApprovalService implements HumanApprovalService {
       requestId: input.decision.requestId,
       idempotencyKey: input.idempotencyKey,
       requestDigest: input.requestDigest,
+      ...(input.decision.intentDigest ? { intentDigest: input.decision.intentDigest } : {}),
       policyVersion: input.mandate.policyVersion,
       merchantId: input.merchantId,
       merchantDomain: input.merchantDomain,
@@ -189,6 +190,18 @@ export function approvalCoversDecision(
   }
   if (request.policyVersion !== decision.policyVersion || request.mandateId !== decision.mandateId) {
     return false;
+  }
+  if (
+    request.intentDigest !== undefined ||
+    decision.intentDigest !== undefined
+  ) {
+    if (
+      !request.intentDigest ||
+      !decision.intentDigest ||
+      request.intentDigest !== decision.intentDigest
+    ) {
+      return false;
+    }
   }
   if (!decision.policyAmount || request.currency !== decision.policyAmount.currency) {
     return false;
