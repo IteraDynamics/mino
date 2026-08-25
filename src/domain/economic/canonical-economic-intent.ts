@@ -41,13 +41,26 @@ export interface CanonicalEconomicIntent {
     readonly shipping?: Money;
     readonly total: Money;
   };
-  /** Raw idempotency keys are transport secrets/identifiers; canonical intent binds only their digest. */
+  /** Raw idempotency keys are transport identifiers; canonical intent binds only their digest. */
   readonly idempotencyDigest: string;
 }
 
 export interface BoundEconomicIntent {
   readonly canonicalIntent: CanonicalEconomicIntent;
   readonly intentDigest: string;
+}
+
+export function authorityReferenceFromMandate(
+  mandate: AgentSpendMandate,
+): EconomicAuthorityReference {
+  return {
+    organizationId: mandate.organizationId,
+    userId: mandate.userId,
+    agentId: mandate.agentId,
+    mandateId: mandate.id,
+    policyId: mandate.policyId,
+    policyVersion: mandate.policyVersion,
+  };
 }
 
 /**
@@ -59,9 +72,9 @@ export interface BoundEconomicIntent {
  */
 export function bindEconomicIntent(
   intent: EconomicIntent,
-  mandate: AgentSpendMandate,
+  authority: EconomicAuthorityReference,
 ): BoundEconomicIntent {
-  assertAuthorityBinding(intent, mandate);
+  assertAuthorityBinding(intent, authority);
 
   const counterparty = resolveEconomicCounterparty(intent);
   if (!counterparty) {
@@ -75,14 +88,7 @@ export function bindEconomicIntent(
 
   const canonicalIntent: CanonicalEconomicIntent = deepFreeze({
     schemaVersion: ECONOMIC_INTENT_SCHEMA_VERSION,
-    authority: {
-      organizationId: mandate.organizationId,
-      userId: mandate.userId,
-      agentId: mandate.agentId,
-      mandateId: mandate.id,
-      policyId: mandate.policyId,
-      policyVersion: mandate.policyVersion,
-    },
+    authority: { ...authority },
     operation: intent.operation,
     provider: {
       protocol: intent.protocol,
@@ -105,11 +111,14 @@ export function bindEconomicIntent(
   });
 }
 
-function assertAuthorityBinding(intent: EconomicIntent, mandate: AgentSpendMandate): void {
+function assertAuthorityBinding(
+  intent: EconomicIntent,
+  authority: EconomicAuthorityReference,
+): void {
   if (
-    intent.organizationId !== mandate.organizationId ||
-    intent.userId !== mandate.userId ||
-    intent.agentId !== mandate.agentId
+    intent.organizationId !== authority.organizationId ||
+    intent.userId !== authority.userId ||
+    intent.agentId !== authority.agentId
   ) {
     throw new Error("EconomicIntent identity does not match delegated authority");
   }
