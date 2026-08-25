@@ -206,10 +206,11 @@ function parseTotal(value: unknown): ACPTotal {
   if (!isRecord(value)) {
     throw new ACPProtocolError("ACP total must be an object");
   }
+  const displayText = optionalString(value.display_text);
   return {
     type: requireString(value.type, "total type"),
     amount: requireSafeMinorUnit(value.amount, "total amount"),
-    ...(optionalString(value.display_text) ? { display_text: optionalString(value.display_text) } : {}),
+    ...(displayText ? { display_text: displayText } : {}),
   };
 }
 
