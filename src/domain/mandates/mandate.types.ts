@@ -1,3 +1,4 @@
+import type { EconomicCounterpartySelector } from "../economic/counterparty-identity.js";
 import type { CurrencyCode } from "../money.js";
 
 export type UUID = string;
@@ -13,6 +14,8 @@ export interface VelocityPolicy {
   readonly maxTransactionsPerMinute: number;
   readonly crossMerchantWindowSeconds: number;
   readonly maxDistinctMerchantsInWindow: number;
+  /** New rails may express the same control without merchant terminology. */
+  readonly maxDistinctCounterpartiesInWindow?: number;
 }
 
 export interface AgentSpendMandate {
@@ -27,8 +30,11 @@ export interface AgentSpendMandate {
   readonly maxBudgetPerTransactionMinor: bigint;
   readonly rollingDailyLimitMinor: bigint;
 
+  /** Legacy checkout selectors retained for existing ACP policies. */
   readonly approvedMerchantDomains: readonly string[];
   readonly approvedVendorIds: readonly string[];
+  /** Provider-neutral selectors. When present, Core evaluates these instead of merchant projections. */
+  readonly approvedCounterparties?: readonly EconomicCounterpartySelector[];
   readonly restrictedCategories: readonly string[];
 
   /**
