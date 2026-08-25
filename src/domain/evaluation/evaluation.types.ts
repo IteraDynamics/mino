@@ -20,8 +20,7 @@ export interface EvaluationContext {
   readonly mandate: AgentSpendMandate;
   /**
    * Provider-neutral economic authorization input. The property name remains
-   * `checkout` in PR #31 for compatibility with the existing transaction path;
-   * provider/protocol provenance must not alter policy meaning.
+   * `checkout` for compatibility with the existing transaction path.
    */
   readonly checkout: EconomicIntent;
   readonly spend: SpendState;
@@ -48,6 +47,12 @@ export interface PolicyDecision {
   readonly mandateId: UUID;
   readonly policyId: UUID;
   readonly policyVersion: number;
+
+  /**
+   * Present for decisions over provider-authoritative execution intents. Synthetic
+   * evaluator-only fixtures may omit it, but execution/approval paths require it.
+   */
+  readonly intentDigest?: string;
 
   readonly eligibleForDelegationAssertion: boolean;
 
