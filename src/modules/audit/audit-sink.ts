@@ -40,6 +40,7 @@ const REDACT_KEYS = new Set([
   "client_secret",
   "secret",
   "payment_method",
+  "paymentmethodid",
   "card_number",
   "number",
   "cvc",
