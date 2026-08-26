@@ -1,3 +1,4 @@
+import type { EconomicProviderProtocol } from "../../domain/economic/economic-intent.types.js";
 import type { PolicyDecision } from "../../domain/evaluation/evaluation.types.js";
 
 export interface GatewayAuditEvent {
@@ -8,7 +9,7 @@ export interface GatewayAuditEvent {
   readonly agentId: string;
   readonly mandateId: string;
   readonly timestamp: Date;
-  readonly protocol: "ACP";
+  readonly protocol: EconomicProviderProtocol;
   readonly operation: string;
   readonly merchantDomain: string;
   readonly merchantVendorId?: string;
@@ -36,6 +37,9 @@ const REDACT_KEYS = new Set([
   "token",
   "credential",
   "authorization",
+  "client_secret",
+  "secret",
+  "payment_method",
   "card_number",
   "number",
   "cvc",
