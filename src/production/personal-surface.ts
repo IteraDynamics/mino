@@ -6,6 +6,8 @@ import { registerPersonalApprovalRoutes } from "../api/personal-approval.routes.
 import { registerPersonalAuthorityRoutes } from "../api/personal-authority.routes.js";
 import { registerPersonalExecutionRoutes } from "../api/personal-execution.routes.js";
 import { registerPersonalRoutes } from "../api/personal.routes.js";
+import { registerPersonalStripeExecutionRoutes } from "../api/personal-stripe-execution.routes.js";
+import { loadPersonalStripeConfig } from "../infrastructure/config/personal-stripe-config.js";
 import type { ProductionConfig } from "../infrastructure/config/production-config.js";
 import { StaticMandateVerificationKeyResolver } from "../infrastructure/crypto/static-key-providers.js";
 import { StaticMerchantCredentialProvider } from "../infrastructure/merchant/static-merchant-credential-provider.js";
@@ -22,6 +24,8 @@ import {
   type PersonalJwtIssuerConfig,
 } from "../modules/personal/personal-owner-authenticator.js";
 import { PostgresPersonalPairingService } from "../modules/personal/personal-pairing.service.js";
+import { PersonalStripeExecutionService } from "../modules/personal/personal-stripe-execution.service.js";
+import { FetchStripePaymentIntentClient } from "../modules/providers/stripe/stripe-payment-intent-client.js";
 
 export interface PersonalProductionSurface {
   close(): Promise<void>;
@@ -29,16 +33,16 @@ export interface PersonalProductionSurface {
 
 /**
  * Compose the opt-in Personal control + execution adapter surface onto the already
- * created Mino application. Personal reuses the exact production authorization
- * proxy, durable approval service, and signed authorization-receipt issuer.
- * Upstream merchant credentials are resolved server-side from Mino's credential
- * provider and are never exposed to OpenClaw.
+ * created Mino application. Personal ACP reuses the production proxy; Personal Stripe
+ * reuses the exact production authorization/reservation/audit graph. Provider
+ * credentials remain server-side and are never exposed to OpenClaw.
  */
 export async function registerPersonalProductionSurface(
   app: FastifyInstance,
   config: ProductionConfig,
   jwtIssuers: readonly PersonalJwtIssuerConfig[],
   now: () => Date = () => new Date(),
+  environment: NodeJS.ProcessEnv = process.env,
 ): Promise<PersonalProductionSurface | undefined> {
   if (jwtIssuers.length === 0) return undefined;
   if (!config.mandateSigningKey) {
@@ -51,6 +55,11 @@ export async function registerPersonalProductionSurface(
   }
   if (!runtime.receipts) {
     throw new Error("Mino Personal execution requires authorization receipt issuance");
+  }
+
+  const stripeConfig = loadPersonalStripeConfig(environment);
+  if (stripeConfig && !runtime.economicAuthorization) {
+    throw new Error("Mino Personal Stripe execution requires production economic authorization dependencies");
   }
 
   const pool = new Pool({
@@ -95,6 +104,23 @@ export async function registerPersonalProductionSurface(
       new StaticMerchantCredentialProvider(config.merchantCredentials),
     );
 
+    const stripeExecution =
+      stripeConfig && runtime.economicAuthorization
+        ? new PersonalStripeExecutionService({
+            ...runtime.economicAuthorization,
+            stripeClient: new FetchStripePaymentIntentClient(),
+            stripeTarget: stripeConfig.target,
+            credentials: {
+              async getAuthorization(organizationId, providerTargetId) {
+                return organizationId === stripeConfig.target.organizationId &&
+                  providerTargetId === stripeConfig.target.id
+                  ? stripeConfig.authorization
+                  : undefined;
+              },
+            },
+          })
+        : undefined;
+
     await registerPersonalRoutes(app, { personal, authenticator });
     await registerPersonalAuthorityRoutes(app, { authority, authenticator });
     await registerPersonalApprovalRoutes(app, {
@@ -106,6 +132,13 @@ export async function registerPersonalProductionSurface(
       receipts: runtime.receipts,
       now,
     });
+    if (stripeExecution) {
+      await registerPersonalStripeExecutionRoutes(app, {
+        execution: stripeExecution,
+        receipts: runtime.receipts,
+        now,
+      });
+    }
 
     return {
       async close(): Promise<void> {
