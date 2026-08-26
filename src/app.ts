@@ -55,11 +55,34 @@ import {
   registerPersonalRoutes,
   type PersonalRouteDependencies,
 } from "./api/personal.routes.js";
+import type { PolicyEvaluator } from "./domain/evaluation/policy-evaluator.interface.js";
+import type { AgentRequestAuthenticator } from "./modules/agents/agent-request-verifier.js";
 import type { HumanApprovalService } from "./modules/approvals/durable-approval.service.js";
 import type { ApprovalResolutionAuthenticator } from "./modules/approvals/approval-resolution-authenticator.js";
+import type { AuditSink } from "./modules/audit/audit-sink.js";
+import type { AuthorizationGrantIssuer } from "./modules/authorization/authorization-grant.service.js";
+import type { MandateTokenService } from "./modules/mandates/mandate-token.service.js";
+import type { PaymentOutcomeStore } from "./modules/payments/payment-outcome.store.js";
 import type { CheckoutLifecycleProxyService } from "./modules/proxy/checkout-lifecycle-proxy.service.js";
-import type { CheckoutProxyService } from "./modules/proxy/checkout-proxy.service.js";
+import type {
+  CheckoutProxyService,
+  MandateRepository,
+} from "./modules/proxy/checkout-proxy.service.js";
 import type { AuthorizationReceiptIssuer } from "./modules/receipts/authorization-receipt.service.js";
+import type { AuthorizationReservations } from "./modules/spending/authorization-reservation.service.js";
+
+export interface RuntimeEconomicAuthorizationDependencies {
+  readonly mandateTokens: Pick<MandateTokenService, "verify" | "assertBoundToMandate">;
+  readonly mandates: MandateRepository;
+  readonly agentRequests: AgentRequestAuthenticator;
+  readonly evaluator: PolicyEvaluator;
+  readonly reservations: AuthorizationReservations;
+  readonly paymentOutcomes: PaymentOutcomeStore;
+  readonly approvals: HumanApprovalService;
+  readonly audit: AuditSink;
+  readonly grants: AuthorizationGrantIssuer;
+  readonly generateId: () => string;
+}
 
 export interface CreateAppOptions {
   readonly proxy: CheckoutProxyService;
@@ -67,6 +90,8 @@ export interface CreateAppOptions {
   readonly approvals?: HumanApprovalService;
   readonly approvalAuthenticator?: ApprovalResolutionAuthenticator;
   readonly receipts?: AuthorizationReceiptIssuer;
+  /** Internal-only composition handoff for provider adapters registered after app creation. */
+  readonly economicAuthorization?: RuntimeEconomicAuthorizationDependencies;
   readonly personal?: PersonalRouteDependencies;
   readonly adminAccess?: AdminAccessRouteDependencies;
   readonly adminInventory?: AdminInventoryRouteDependencies;
@@ -88,14 +113,16 @@ export interface AppRuntimeDependencies {
   readonly proxy: CheckoutProxyService;
   readonly approvals?: HumanApprovalService;
   readonly receipts?: AuthorizationReceiptIssuer;
+  readonly economicAuthorization?: RuntimeEconomicAuthorizationDependencies;
 }
 
 const appRuntimeDependencies = new WeakMap<FastifyInstance, AppRuntimeDependencies>();
 
 /**
  * Internal composition handoff for surfaces registered after the core Fastify app
- * is built. This does not expose runtime services over HTTP and avoids rebuilding
- * the economic authorization dependency graph for Personal adapters.
+ * is built. This does not expose runtime services over HTTP. Critically, Personal
+ * provider adapters receive the exact same authorization/reservation/audit graph
+ * as the primary production surface rather than reconstructing a second authority.
  */
 export function getAppRuntimeDependencies(app: FastifyInstance): AppRuntimeDependencies {
   const runtime = appRuntimeDependencies.get(app);
@@ -111,6 +138,9 @@ export async function createApp(options: CreateAppOptions): Promise<FastifyInsta
     proxy: options.proxy,
     ...(options.approvals ? { approvals: options.approvals } : {}),
     ...(options.receipts ? { receipts: options.receipts } : {}),
+    ...(options.economicAuthorization
+      ? { economicAuthorization: options.economicAuthorization }
+      : {}),
   });
 
   app.get("/healthz", async () => ({ status: "ok" }));
