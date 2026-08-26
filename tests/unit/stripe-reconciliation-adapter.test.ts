@@ -8,11 +8,12 @@ import type {
 } from "../../src/modules/providers/stripe/stripe-payment-intent-client.js";
 
 const NOW = new Date("2026-08-19T20:30:00.000Z");
+const ORG_ID = "11111111-1111-4111-8111-111111111111";
 
 function outcome(overrides: Partial<PaymentOutcomeRecord> = {}): PaymentOutcomeRecord {
   return {
     id: "outcome-37",
-    organizationId: "org-1",
+    organizationId: ORG_ID,
     userId: "user-1",
     agentId: "agent-1",
     mandateId: "mandate-1",
@@ -31,7 +32,10 @@ function outcome(overrides: Partial<PaymentOutcomeRecord> = {}): PaymentOutcomeR
   };
 }
 
-function providerResponse(status: string, args: { amount?: number; id?: string } = {}): StripeProviderResponse {
+function providerResponse(
+  status: string,
+  args: { amount?: number; id?: string; livemode?: boolean } = {},
+): StripeProviderResponse {
   return {
     status: 200,
     body: {
@@ -40,6 +44,10 @@ function providerResponse(status: string, args: { amount?: number; id?: string }
       amount: args.amount ?? 5000,
       currency: "usd",
       status,
+      capture_method: "automatic",
+      confirmation_method: "manual",
+      livemode: args.livemode ?? false,
+      payment_method: "pm_test37",
       client_secret: "pi_test37_secret_should_never_be_persisted",
     },
     headers: {
@@ -62,11 +70,13 @@ function adapterWith(response: StripeProviderResponse) {
   return new StripeReconciliationAdapter({
     targets: {
       async getById(organizationId, providerTargetId) {
-        return organizationId === "org-1" && providerTargetId === "stripe-target-1"
+        return organizationId === ORG_ID && providerTargetId === "stripe-target-1"
           ? {
               id: "stripe-target-1",
+              organizationId: ORG_ID,
               accountId: "acct_123",
               domain: "supplier.example",
+              expectedLivemode: false,
               active: true,
             }
           : undefined;
@@ -75,7 +85,7 @@ function adapterWith(response: StripeProviderResponse) {
     client,
     credentials: {
       async getAuthorization(organizationId, providerTargetId) {
-        return organizationId === "org-1" && providerTargetId === "stripe-target-1"
+        return organizationId === ORG_ID && providerTargetId === "stripe-target-1"
           ? "Bearer sk_test_example"
           : undefined;
       },
@@ -97,11 +107,15 @@ describe("StripeReconciliationAdapter", () => {
       amount: "5000",
       currency: "USD",
       status: "succeeded",
+      capture_method: "automatic",
+      confirmation_method: "manual",
+      livemode: false,
     });
     expect(observation.evidence.headers).toEqual({
       "request-id": "req_stripe_reconcile_1",
     });
     expect(JSON.stringify(observation.evidence)).not.toContain("client_secret");
+    expect(JSON.stringify(observation.evidence)).not.toContain("payment_method");
     expect(JSON.stringify(observation.evidence)).not.toContain("set-cookie");
   });
 
@@ -127,6 +141,18 @@ describe("StripeReconciliationAdapter", () => {
     expect(observation).toEqual({
       disposition: "DEFERRED",
       errorCode: "STRIPE_PAYMENT_INTENT_ECONOMICS_MISMATCH",
+      providerStatus: 200,
+    });
+  });
+
+  it("fails closed when live/test mode does not match the configured target", async () => {
+    const observation = await adapterWith(
+      providerResponse("succeeded", { livemode: true }),
+    ).reconcile(outcome());
+
+    expect(observation).toEqual({
+      disposition: "DEFERRED",
+      errorCode: "STRIPE_PAYMENT_INTENT_MODE_MISMATCH",
       providerStatus: 200,
     });
   });
