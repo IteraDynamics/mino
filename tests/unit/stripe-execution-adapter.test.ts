@@ -1,120 +1,121 @@
+import { generateKeyPairSync } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import type { AuthorizationDecision } from "../../src/domain/economic/authorization-decision.js";
-import type { SignedAuthorizationGrant } from "../../src/domain/economic/authorization-grant.types.js";
+import { bindEconomicIntent } from "../../src/domain/economic/canonical-economic-intent.js";
 import type { EconomicIntent } from "../../src/domain/economic/economic-intent.types.js";
 import { DecisionVerdict } from "../../src/domain/evaluation/evaluation.types.js";
+import { AuthorizationGrantService } from "../../src/modules/authorization/authorization-grant.service.js";
+import { normalizeStripeAuthoritativeIntent } from "../../src/modules/providers/stripe/stripe-authoritative-intent.js";
 import { StripeExecutionAdapter } from "../../src/modules/providers/stripe/stripe-execution-adapter.js";
+import type { NormalizedStripePaymentIntent } from "../../src/modules/providers/stripe/stripe-payment-intent.js";
 import type {
   StripePaymentIntentClient,
   StripeProviderResponse,
 } from "../../src/modules/providers/stripe/stripe-payment-intent-client.js";
 
-const NOW = new Date("2026-08-19T20:00:00.000Z");
-const INTENT_DIGEST = "S".repeat(43);
+const NOW = new Date("2026-08-26T15:30:00.000Z");
+const ORG_ID = "11111111-1111-4111-8111-111111111111";
+const USER_ID = "22222222-2222-4222-8222-222222222222";
+const AGENT_ID = "33333333-3333-4333-8333-333333333333";
+const MANDATE_ID = "44444444-4444-4444-8444-444444444444";
+const POLICY_ID = "55555555-5555-4555-8555-555555555555";
+const REQUEST_ID = "66666666-6666-4666-8666-666666666666";
+const DECISION_ID = "77777777-7777-4777-8777-777777777777";
 
-function intent(protocol: EconomicIntent["protocol"] = "STRIPE"): EconomicIntent {
+const target = {
+  id: "stripe-target-1",
+  organizationId: ORG_ID,
+  domain: "supplier.example",
+  accountId: "acct_123",
+  expectedLivemode: false,
+  active: true,
+} as const;
+
+function paymentIntent(overrides: Partial<NormalizedStripePaymentIntent> = {}): NormalizedStripePaymentIntent {
   return {
-    requestId: "request-37",
-    protocol,
-    operation: "AUTHORIZE_PAYMENT",
-    organizationId: "org-1",
-    userId: "user-1",
-    agentId: "agent-1",
-    counterparty: {
-      kind: "MERCHANT",
-      identifiers: [
-        { scheme: "DOMAIN", value: "supplier.example" },
-        { scheme: "PROVIDER_REFERENCE", namespace: "stripe-account", value: "acct_123" },
-      ],
-    },
-    cart: [
-      {
-        lineId: "line-1",
-        name: "Printer paper",
-        category: "OFFICE_SUPPLIES",
-        quantity: 1,
-        unitPrice: { currency: "USD", minorUnits: 5_000n },
-        totalPrice: { currency: "USD", minorUnits: 5_000n },
-      },
-    ],
-    subtotal: { currency: "USD", minorUnits: 5_000n },
-    total: { currency: "USD", minorUnits: 5_000n },
-    idempotencyKey: "idem-stripe-37",
-    rawPayload: { payment_intent: "pi_test37" },
+    id: "pi_test51",
+    amount: 500n,
+    currency: "USD",
+    status: "requires_confirmation",
+    captureMethod: "automatic",
+    confirmationMethod: "manual",
+    livemode: false,
+    paymentMethodId: "pm_original",
+    ...overrides,
   };
 }
 
-function decision(intentDigest = INTENT_DIGEST): AuthorizationDecision {
+function providerResponse(pi: NormalizedStripePaymentIntent): StripeProviderResponse {
   return {
-    decisionId: "decision-37",
-    requestId: "request-37",
+    status: 200,
+    body: {
+      id: pi.id,
+      object: "payment_intent",
+      amount: Number(pi.amount),
+      currency: pi.currency.toLowerCase(),
+      status: pi.status,
+      capture_method: pi.captureMethod,
+      confirmation_method: pi.confirmationMethod,
+      livemode: pi.livemode,
+      payment_method: pi.paymentMethodId ?? null,
+      on_behalf_of: pi.onBehalfOf ?? null,
+      transfer_data: pi.transferDestination ? { destination: pi.transferDestination } : null,
+      application_fee_amount:
+        pi.applicationFeeAmount !== undefined ? Number(pi.applicationFeeAmount) : null,
+    },
+  };
+}
+
+function authorized(initial = paymentIntent()): {
+  intent: EconomicIntent;
+  decision: AuthorizationDecision;
+  grants: AuthorizationGrantService;
+} {
+  const intent = normalizeStripeAuthoritativeIntent({
+    paymentIntent: initial,
+    target,
+    requestId: REQUEST_ID,
+    userId: USER_ID,
+    agentId: AGENT_ID,
+    idempotencyKey: "stripe-live-idem-51",
+  });
+  const bound = bindEconomicIntent(intent, {
+    organizationId: ORG_ID,
+    userId: USER_ID,
+    agentId: AGENT_ID,
+    mandateId: MANDATE_ID,
+    policyId: POLICY_ID,
+    policyVersion: 1,
+  });
+  const decision: AuthorizationDecision = {
+    decisionId: DECISION_ID,
+    requestId: REQUEST_ID,
     verdict: DecisionVerdict.ALLOW,
     reasons: [],
-    requestedAmount: { currency: "USD", minorUnits: 5_000n },
-    policyAmount: { currency: "USD", minorUnits: 5_000n },
-    approvedAmount: { currency: "USD", minorUnits: 5_000n },
-    mandateId: "mandate-37",
-    policyId: "policy-37",
+    requestedAmount: { currency: "USD", minorUnits: 500n },
+    policyAmount: { currency: "USD", minorUnits: 500n },
+    approvedAmount: { currency: "USD", minorUnits: 500n },
+    mandateId: MANDATE_ID,
+    policyId: POLICY_ID,
     policyVersion: 1,
-    intentDigest,
+    intentDigest: bound.intentDigest,
     eligibleForDelegationAssertion: true,
     evaluationLatencyMicros: 10,
     evaluatedAt: NOW,
   };
-}
-
-function grant(args: { accountId?: string; amountMinor?: string; intentDigest?: string } = {}): SignedAuthorizationGrant {
+  const { privateKey } = generateKeyPairSync("ed25519");
   return {
-    token: "header.payload.signature",
-    claims: {
-      iss: "https://mino.example",
-      aud: "mino:economic-execution",
-      sub: "agent-1",
-      jti: "grant-37",
-      iat: Math.floor(NOW.getTime() / 1000),
-      exp: Math.floor(NOW.getTime() / 1000) + 45,
-      organization_id: "org-1",
-      user_id: "user-1",
-      agent_id: "agent-1",
-      mandate_id: "mandate-37",
-      policy_id: "policy-37",
-      policy_version: 1,
-      decision_id: "decision-37",
-      request_id: "request-37",
-      operation: "AUTHORIZE_PAYMENT",
-      counterparty: {
-        kind: "MERCHANT",
-        identifiers: [
-          { scheme: "DOMAIN", value: "supplier.example" },
-          {
-            scheme: "PROVIDER_REFERENCE",
-            namespace: "stripe-account",
-            value: args.accountId ?? "acct_123",
-          },
-        ],
-      },
-      amount_minor: args.amountMinor ?? "5000",
-      currency: "USD",
-      idempotency_digest: "idem-digest",
-      intent_digest: args.intentDigest ?? INTENT_DIGEST,
-    },
+    intent,
+    decision,
+    grants: new AuthorizationGrantService(
+      { keyId: "grant-k1", privateKey },
+      () => "grant-51",
+      { issuer: "https://mino.example" },
+    ),
   };
 }
 
-function response(status: string, amount = 5000): StripeProviderResponse {
-  return {
-    status: 200,
-    body: {
-      id: "pi_test37",
-      object: "payment_intent",
-      amount,
-      currency: "usd",
-      status,
-    },
-  };
-}
-
-function harness(current: StripeProviderResponse = response("requires_confirmation")) {
+function harness(current: NormalizedStripePaymentIntent) {
   let retrieves = 0;
   let confirms = 0;
   let confirmedIdempotencyKey: string | undefined;
@@ -122,12 +123,12 @@ function harness(current: StripeProviderResponse = response("requires_confirmati
   const client: StripePaymentIntentClient = {
     async retrievePaymentIntent() {
       retrieves += 1;
-      return current;
+      return providerResponse(current);
     },
     async confirmPaymentIntent(input) {
       confirms += 1;
       confirmedIdempotencyKey = input.idempotencyKey;
-      return response("succeeded");
+      return providerResponse(paymentIntent({ status: "succeeded" }));
     },
   };
 
@@ -138,42 +139,46 @@ function harness(current: StripeProviderResponse = response("requires_confirmati
 }
 
 describe("StripeExecutionAdapter", () => {
-  it("preflights authorized economics and confirms the bound PaymentIntent exactly once", async () => {
-    const h = harness();
+  it("re-fetches the exact authorized PaymentIntent and confirms it once", async () => {
+    const authorization = authorized();
+    const h = harness(paymentIntent());
+    const grant = authorization.grants.issue(authorization.intent, authorization.decision, NOW);
 
     const result = await h.adapter.execute({
-      intent: intent(),
-      decision: decision(),
-      grant: grant(),
+      intent: authorization.intent,
+      decision: authorization.decision,
+      grant,
       now: NOW,
       context: {
-        authorization: "Bearer sk_test_example",
-        accountId: "acct_123",
-        paymentIntentId: "pi_test37",
+        authorization: "Bearer rk_test_server_only",
+        target,
+        paymentIntentId: "pi_test51",
       },
     });
 
-    expect(result.body).toMatchObject({ id: "pi_test37", status: "succeeded" });
+    expect(result.body).toMatchObject({ id: "pi_test51", status: "succeeded" });
     expect(h.state()).toEqual({
       retrieves: 1,
       confirms: 1,
-      confirmedIdempotencyKey: "idem-stripe-37",
+      confirmedIdempotencyKey: "stripe-live-idem-51",
     });
   });
 
   it("refuses a non-Stripe intent before provider access", async () => {
-    const h = harness();
+    const authorization = authorized();
+    const h = harness(paymentIntent());
+    const grant = authorization.grants.issue(authorization.intent, authorization.decision, NOW);
 
     await expect(
       h.adapter.execute({
-        intent: intent("ACP"),
-        decision: decision(),
-        grant: grant(),
+        intent: { ...authorization.intent, protocol: "ACP" },
+        decision: authorization.decision,
+        grant,
         now: NOW,
         context: {
-          authorization: "Bearer sk_test_example",
-          accountId: "acct_123",
-          paymentIntentId: "pi_test37",
+          authorization: "Bearer rk_test_server_only",
+          target,
+          paymentIntentId: "pi_test51",
         },
       }),
     ).rejects.toThrowError("Stripe execution adapter refuses non-Stripe economic intent");
@@ -181,57 +186,64 @@ describe("StripeExecutionAdapter", () => {
     expect(h.state().confirms).toBe(0);
   });
 
-  it("refuses a connected account not bound by the AuthorizationGrant", async () => {
-    const h = harness();
+  it("refuses a configured target not bound by the AuthorizationGrant", async () => {
+    const authorization = authorized();
+    const h = harness(paymentIntent());
+    const grant = authorization.grants.issue(authorization.intent, authorization.decision, NOW);
 
     await expect(
       h.adapter.execute({
-        intent: intent(),
-        decision: decision(),
-        grant: grant({ accountId: "acct_other" }),
+        intent: authorization.intent,
+        decision: authorization.decision,
+        grant,
         now: NOW,
         context: {
-          authorization: "Bearer sk_test_example",
-          accountId: "acct_123",
-          paymentIntentId: "pi_test37",
+          authorization: "Bearer rk_test_server_only",
+          target: { ...target, accountId: "acct_other" },
+          paymentIntentId: "pi_test51",
         },
       }),
-    ).rejects.toThrowError("Authorization grant does not bind the Stripe connected account");
+    ).rejects.toThrowError("Authorization grant does not bind the configured Stripe execution target");
     expect(h.state().retrieves).toBe(0);
   });
 
-  it("refuses a grant bound to a different EconomicIntent digest", async () => {
-    const h = harness();
+  it("rejects a changed payment method after authorization before confirmation", async () => {
+    const authorization = authorized();
+    const h = harness(paymentIntent({ paymentMethodId: "pm_replaced" }));
+    const grant = authorization.grants.issue(authorization.intent, authorization.decision, NOW);
 
     await expect(
       h.adapter.execute({
-        intent: intent(),
-        decision: decision(),
-        grant: grant({ intentDigest: "T".repeat(43) }),
+        intent: authorization.intent,
+        decision: authorization.decision,
+        grant,
         now: NOW,
         context: {
-          authorization: "Bearer sk_test_example",
-          accountId: "acct_123",
-          paymentIntentId: "pi_test37",
+          authorization: "Bearer rk_test_server_only",
+          target,
+          paymentIntentId: "pi_test51",
         },
       }),
-    ).rejects.toThrowError("Authorization grant does not bind to the requested Stripe execution");
-    expect(h.state().retrieves).toBe(0);
+    ).rejects.toThrowError("Authoritative Stripe PaymentIntent state changed after authorization");
+    expect(h.state().retrieves).toBe(1);
+    expect(h.state().confirms).toBe(0);
   });
 
-  it("refuses provider economics that differ from Mino's signed authorization", async () => {
-    const h = harness(response("requires_confirmation", 7500));
+  it("rejects changed amount after authorization before confirmation", async () => {
+    const authorization = authorized();
+    const h = harness(paymentIntent({ amount: 750n }));
+    const grant = authorization.grants.issue(authorization.intent, authorization.decision, NOW);
 
     await expect(
       h.adapter.execute({
-        intent: intent(),
-        decision: decision(),
-        grant: grant(),
+        intent: authorization.intent,
+        decision: authorization.decision,
+        grant,
         now: NOW,
         context: {
-          authorization: "Bearer sk_test_example",
-          accountId: "acct_123",
-          paymentIntentId: "pi_test37",
+          authorization: "Bearer rk_test_server_only",
+          target,
+          paymentIntentId: "pi_test51",
         },
       }),
     ).rejects.toThrowError("Stripe PaymentIntent economics do not match the AuthorizationGrant");

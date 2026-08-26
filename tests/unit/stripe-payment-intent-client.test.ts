@@ -2,20 +2,14 @@ import { describe, expect, it } from "vitest";
 import { FetchStripePaymentIntentClient } from "../../src/modules/providers/stripe/stripe-payment-intent-client.js";
 
 describe("FetchStripePaymentIntentClient", () => {
-  it("confirms a PaymentIntent with server-side auth, connected-account routing, and idempotency", async () => {
+  it("confirms a preconfigured PaymentIntent with server-side auth, connected-account routing, and idempotency", async () => {
     const calls: Array<{ url: string; init?: RequestInit }> = [];
     const fetchImpl: typeof fetch = async (input, init) => {
       calls.push({ url: String(input), ...(init ? { init } : {}) });
-      return new Response(
-        JSON.stringify({
-          id: "pi_test1",
-          object: "payment_intent",
-          amount: 5000,
-          currency: "usd",
-          status: "succeeded",
-        }),
-        { status: 200, headers: { "request-id": "req_stripe_1" } },
-      );
+      return new Response(JSON.stringify({ id: "pi_test1", object: "payment_intent" }), {
+        status: 200,
+        headers: { "request-id": "req_stripe_1" },
+      });
     };
     const client = new FetchStripePaymentIntentClient({ fetchImpl });
 
@@ -24,8 +18,6 @@ describe("FetchStripePaymentIntentClient", () => {
       accountId: "acct_123",
       paymentIntentId: "pi_test1",
       idempotencyKey: "mino-idem-1",
-      paymentMethod: "pm_card_visa",
-      returnUrl: "https://mino.example/return",
     });
 
     expect(response.status).toBe(200);
@@ -39,39 +31,46 @@ describe("FetchStripePaymentIntentClient", () => {
       "idempotency-key": "mino-idem-1",
       "content-type": "application/x-www-form-urlencoded",
     });
-    expect(String(calls[0]?.init?.body)).toContain("payment_method=pm_card_visa");
-    expect(String(calls[0]?.init?.body)).toContain(
-      "return_url=https%3A%2F%2Fmino.example%2Freturn",
-    );
+    expect(calls[0]?.init?.body).toBe("");
   });
 
-  it("retrieves a PaymentIntent without sending an execution idempotency header", async () => {
+  it("supports a direct Stripe account without emitting a Stripe-Account header", async () => {
     const calls: Array<{ url: string; init?: RequestInit }> = [];
     const fetchImpl: typeof fetch = async (input, init) => {
       calls.push({ url: String(input), ...(init ? { init } : {}) });
-      return new Response(
-        JSON.stringify({
-          id: "pi_test2",
-          object: "payment_intent",
-          amount: 5000,
-          currency: "usd",
-          status: "processing",
-        }),
-        { status: 200 },
-      );
+      return new Response(JSON.stringify({ id: "pi_test2", object: "payment_intent" }), {
+        status: 200,
+      });
     };
     const client = new FetchStripePaymentIntentClient({ fetchImpl });
 
     await client.retrievePaymentIntent({
-      authorization: "Basic c2tfdGVzdF9leGFtcGxlOg==",
-      accountId: "acct_456",
+      authorization: "Bearer rk_test_example",
       paymentIntentId: "pi_test2",
     });
 
     expect(calls[0]?.init?.method).toBe("GET");
     expect(calls[0]?.init?.headers).toEqual({
-      authorization: "Basic c2tfdGVzdF9leGFtcGxlOg==",
-      "stripe-account": "acct_456",
+      authorization: "Bearer rk_test_example",
+      "content-type": "application/x-www-form-urlencoded",
     });
+  });
+
+  it("rejects non-bearer provider authorization before network access", async () => {
+    let calls = 0;
+    const client = new FetchStripePaymentIntentClient({
+      fetchImpl: async () => {
+        calls += 1;
+        return new Response(null, { status: 200 });
+      },
+    });
+
+    await expect(
+      client.retrievePaymentIntent({
+        authorization: "Basic c2VjcmV0",
+        paymentIntentId: "pi_test3",
+      }),
+    ).rejects.toThrowError("Stripe server-side bearer authorization is required");
+    expect(calls).toBe(0);
   });
 });

@@ -1,10 +1,16 @@
 import type { AuthorizationDecision } from "../../../domain/economic/authorization-decision.js";
 import type { SignedAuthorizationGrant } from "../../../domain/economic/authorization-grant.types.js";
+import { bindEconomicIntent } from "../../../domain/economic/canonical-economic-intent.js";
 import type { EconomicIntent } from "../../../domain/economic/economic-intent.types.js";
+import { sha256Base64Url } from "../../../infrastructure/crypto/canonical-json.js";
 import type {
   EconomicExecutionAdapter,
   EconomicExecutionInput,
 } from "../../execution/execution-adapter.js";
+import {
+  normalizeStripeAuthoritativeIntent,
+  type StripeExecutionTarget,
+} from "./stripe-authoritative-intent.js";
 import {
   parseStripePaymentIntent,
   type NormalizedStripePaymentIntent,
@@ -15,19 +21,21 @@ import type {
 } from "./stripe-payment-intent-client.js";
 
 export interface StripeExecutionContext {
+  /** Server-side only. Never sourced from the agent request. */
   readonly authorization: string;
-  readonly accountId: string;
+  readonly target: StripeExecutionTarget;
   readonly paymentIntentId: string;
-  readonly paymentMethod?: string;
-  readonly returnUrl?: string;
 }
 
-/**
- * Second-provider proof for Mino's neutral execution boundary.
- * Stripe remains a compatibility provider in this PR: it consumes the same
- * intent-bound AuthorizationDecision/ExecutionGrant lifecycle, while full
- * authoritative Stripe-to-canonical-intent normalization is a later adapter test.
- */
+export interface PreparedStripeExecution {
+  readonly intent: EconomicIntent;
+  readonly decision: AuthorizationDecision;
+  readonly grant: SignedAuthorizationGrant;
+  readonly context: StripeExecutionContext;
+  readonly providerState: NormalizedStripePaymentIntent;
+}
+
+/** Provider adapter for a real Stripe PaymentIntent confirmation. */
 export class StripeExecutionAdapter
   implements EconomicExecutionAdapter<StripeExecutionContext, StripeProviderResponse>
 {
@@ -35,9 +43,13 @@ export class StripeExecutionAdapter
 
   public constructor(private readonly client: StripePaymentIntentClient) {}
 
-  public async execute(
+  /**
+   * Final provider-authoritative preflight. The caller may durably record the
+   * execution attempt after this succeeds and before calling dispatchPrepared().
+   */
+  public async prepare(
     input: EconomicExecutionInput<StripeExecutionContext>,
-  ): Promise<StripeProviderResponse> {
+  ): Promise<PreparedStripeExecution> {
     if (input.intent.protocol !== this.protocol) {
       throw new Error("Stripe execution adapter refuses non-Stripe economic intent");
     }
@@ -45,7 +57,7 @@ export class StripeExecutionAdapter
 
     const current = await this.client.retrievePaymentIntent({
       authorization: input.context.authorization,
-      accountId: input.context.accountId,
+      ...(input.context.target.accountId ? { accountId: input.context.target.accountId } : {}),
       paymentIntentId: input.context.paymentIntentId,
     });
     if (current.status < 200 || current.status >= 300) {
@@ -54,23 +66,76 @@ export class StripeExecutionAdapter
 
     const paymentIntent = parseStripePaymentIntent(current.body);
     this.assertProviderEconomicBinding(paymentIntent, input.grant, input.context);
-    this.assertConfirmable(paymentIntent, input.context);
+    this.assertAuthoritativeIntentStillMatches(paymentIntent, input);
 
+    return Object.freeze({
+      intent: input.intent,
+      decision: input.decision,
+      grant: input.grant,
+      context: input.context,
+      providerState: paymentIntent,
+    });
+  }
+
+  /**
+   * Economic dispatch. No mutable agent/provider fields are accepted here: the
+   * PaymentIntent reference, target, credential, and idempotency key all come from
+   * the already-authorized prepared execution.
+   */
+  public async dispatchPrepared(prepared: PreparedStripeExecution): Promise<StripeProviderResponse> {
     const confirmed = await this.client.confirmPaymentIntent({
-      authorization: input.context.authorization,
-      accountId: input.context.accountId,
-      paymentIntentId: input.context.paymentIntentId,
-      idempotencyKey: input.intent.idempotencyKey,
-      ...(input.context.paymentMethod ? { paymentMethod: input.context.paymentMethod } : {}),
-      ...(input.context.returnUrl ? { returnUrl: input.context.returnUrl } : {}),
+      authorization: prepared.context.authorization,
+      ...(prepared.context.target.accountId
+        ? { accountId: prepared.context.target.accountId }
+        : {}),
+      paymentIntentId: prepared.context.paymentIntentId,
+      idempotencyKey: prepared.intent.idempotencyKey,
     });
     if (confirmed.status < 200 || confirmed.status >= 300) {
       return confirmed;
     }
 
     const confirmedIntent = parseStripePaymentIntent(confirmed.body);
-    this.assertProviderEconomicBinding(confirmedIntent, input.grant, input.context);
+    this.assertProviderEconomicBinding(confirmedIntent, prepared.grant, prepared.context);
     return confirmed;
+  }
+
+  public async execute(
+    input: EconomicExecutionInput<StripeExecutionContext>,
+  ): Promise<StripeProviderResponse> {
+    const prepared = await this.prepare(input);
+    return this.dispatchPrepared(prepared);
+  }
+
+  private assertAuthoritativeIntentStillMatches(
+    paymentIntent: NormalizedStripePaymentIntent,
+    input: EconomicExecutionInput<StripeExecutionContext>,
+  ): void {
+    let currentIntent: EconomicIntent;
+    try {
+      currentIntent = normalizeStripeAuthoritativeIntent({
+        paymentIntent,
+        target: input.context.target,
+        requestId: input.intent.requestId,
+        userId: input.intent.userId,
+        agentId: input.intent.agentId,
+        idempotencyKey: input.intent.idempotencyKey,
+      });
+    } catch {
+      throw new Error("Authoritative Stripe PaymentIntent state changed after authorization");
+    }
+
+    const rebound = bindEconomicIntent(currentIntent, {
+      organizationId: input.intent.organizationId,
+      userId: input.intent.userId,
+      agentId: input.intent.agentId,
+      mandateId: input.decision.mandateId,
+      policyId: input.decision.policyId,
+      policyVersion: input.decision.policyVersion,
+    });
+    if (rebound.intentDigest !== input.decision.intentDigest) {
+      throw new Error("Authoritative Stripe PaymentIntent state changed after authorization");
+    }
   }
 
   private assertGrantBinding(
@@ -86,10 +151,15 @@ export class StripeExecutionAdapter
     if (
       grant.claims.request_id !== intent.requestId ||
       grant.claims.decision_id !== decision.decisionId ||
+      grant.claims.organization_id !== intent.organizationId ||
+      grant.claims.user_id !== intent.userId ||
       grant.claims.mandate_id !== decision.mandateId ||
+      grant.claims.policy_id !== decision.policyId ||
+      grant.claims.policy_version !== decision.policyVersion ||
       grant.claims.operation !== intent.operation ||
       grant.claims.agent_id !== intent.agentId ||
       grant.claims.intent_digest !== decision.intentDigest ||
+      grant.claims.idempotency_digest !== sha256Base64Url(intent.idempotencyKey) ||
       grant.claims.amount_minor !== decision.approvedAmount.minorUnits.toString(10) ||
       grant.claims.currency !== decision.approvedAmount.currency
     ) {
@@ -98,8 +168,8 @@ export class StripeExecutionAdapter
     if (grant.claims.exp <= Math.floor(now.getTime() / 1000)) {
       throw new Error("Stripe execution authorization grant is expired");
     }
-    if (!grantBindsStripeAccount(grant, context.accountId)) {
-      throw new Error("Authorization grant does not bind the Stripe connected account");
+    if (!grantBindsStripeTarget(grant, context.target)) {
+      throw new Error("Authorization grant does not bind the configured Stripe execution target");
     }
   }
 
@@ -118,26 +188,28 @@ export class StripeExecutionAdapter
       throw new Error("Stripe PaymentIntent economics do not match the AuthorizationGrant");
     }
   }
-
-  private assertConfirmable(
-    paymentIntent: NormalizedStripePaymentIntent,
-    context: StripeExecutionContext,
-  ): void {
-    if (paymentIntent.status === "requires_confirmation") {
-      return;
-    }
-    if (paymentIntent.status === "requires_payment_method" && context.paymentMethod) {
-      return;
-    }
-    throw new Error(`Stripe PaymentIntent status ${paymentIntent.status} is not confirmable by this adapter`);
-  }
 }
 
-function grantBindsStripeAccount(grant: SignedAuthorizationGrant, accountId: string): boolean {
+function grantBindsStripeTarget(
+  grant: SignedAuthorizationGrant,
+  target: StripeExecutionTarget,
+): boolean {
+  const domainBound = grant.claims.counterparty.identifiers.some(
+    (identifier) =>
+      identifier.scheme === "DOMAIN" &&
+      canonicalDomain(identifier.value) === canonicalDomain(target.domain),
+  );
+  if (!domainBound) return false;
+
+  if (!target.accountId) return true;
   return grant.claims.counterparty.identifiers.some(
     (identifier) =>
       identifier.scheme === "PROVIDER_REFERENCE" &&
       identifier.namespace?.trim().toLowerCase() === "stripe-account" &&
-      identifier.value === accountId,
+      identifier.value === target.accountId,
   );
+}
+
+function canonicalDomain(value: string): string {
+  return value.trim().toLowerCase().replace(/\.$/, "");
 }

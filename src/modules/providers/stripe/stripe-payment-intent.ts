@@ -10,11 +10,21 @@ export type StripePaymentIntentStatus =
   | "canceled"
   | "succeeded";
 
+export type StripeCaptureMethod = "automatic" | "automatic_async" | "manual";
+export type StripeConfirmationMethod = "automatic" | "manual";
+
 export interface NormalizedStripePaymentIntent {
   readonly id: string;
   readonly amount: bigint;
   readonly currency: string;
   readonly status: StripePaymentIntentStatus;
+  readonly captureMethod: StripeCaptureMethod;
+  readonly confirmationMethod: StripeConfirmationMethod;
+  readonly livemode: boolean;
+  readonly paymentMethodId?: string;
+  readonly onBehalfOf?: string;
+  readonly transferDestination?: string;
+  readonly applicationFeeAmount?: bigint;
   readonly cancellationReason?: string;
 }
 
@@ -30,6 +40,9 @@ export function parseStripePaymentIntent(value: unknown): NormalizedStripePaymen
   const amount = value.amount;
   const currency = value.currency;
   const status = value.status;
+  const captureMethod = value.capture_method;
+  const confirmationMethod = value.confirmation_method;
+  const livemode = value.livemode;
 
   if (typeof id !== "string" || !/^pi_[A-Za-z0-9]+$/.test(id)) {
     throw new StripeProtocolError("Stripe PaymentIntent response has an invalid id");
@@ -46,20 +59,41 @@ export function parseStripePaymentIntent(value: unknown): NormalizedStripePaymen
   if (!isStripePaymentIntentStatus(status)) {
     throw new StripeProtocolError("Stripe PaymentIntent status is unknown");
   }
+  if (!isStripeCaptureMethod(captureMethod)) {
+    throw new StripeProtocolError("Stripe PaymentIntent capture method is unknown");
+  }
+  if (!isStripeConfirmationMethod(confirmationMethod)) {
+    throw new StripeProtocolError("Stripe PaymentIntent confirmation method is unknown");
+  }
+  if (typeof livemode !== "boolean") {
+    throw new StripeProtocolError("Stripe PaymentIntent livemode flag is invalid");
+  }
 
+  const paymentMethodId = optionalStripeId(value.payment_method, "pm_");
+  const onBehalfOf = optionalStripeId(value.on_behalf_of, "acct_");
+  const transferDestination = transferDestinationId(value.transfer_data);
+  const applicationFeeAmount = optionalNonNegativeInteger(value.application_fee_amount);
   const cancellationReason = value.cancellation_reason;
+
   return {
     id,
     amount: BigInt(amount),
     currency: currency.toUpperCase(),
     status,
+    captureMethod,
+    confirmationMethod,
+    livemode,
+    ...(paymentMethodId ? { paymentMethodId } : {}),
+    ...(onBehalfOf ? { onBehalfOf } : {}),
+    ...(transferDestination ? { transferDestination } : {}),
+    ...(applicationFeeAmount !== undefined ? { applicationFeeAmount } : {}),
     ...(typeof cancellationReason === "string" && cancellationReason
       ? { cancellationReason }
       : {}),
   };
 }
 
-/** Store only the provider facts needed for audit/replay; never persist client_secret or payment details. */
+/** Store only provider facts needed for audit/replay; never persist client_secret or payment details. */
 export function stripeEvidence(
   upstream: StripeProviderResponse,
   paymentIntent: NormalizedStripePaymentIntent,
@@ -73,6 +107,16 @@ export function stripeEvidence(
       amount: paymentIntent.amount.toString(10),
       currency: paymentIntent.currency,
       status: paymentIntent.status,
+      capture_method: paymentIntent.captureMethod,
+      confirmation_method: paymentIntent.confirmationMethod,
+      livemode: paymentIntent.livemode,
+      ...(paymentIntent.onBehalfOf ? { on_behalf_of: paymentIntent.onBehalfOf } : {}),
+      ...(paymentIntent.transferDestination
+        ? { transfer_destination: paymentIntent.transferDestination }
+        : {}),
+      ...(paymentIntent.applicationFeeAmount !== undefined
+        ? { application_fee_amount: paymentIntent.applicationFeeAmount.toString(10) }
+        : {}),
       ...(paymentIntent.cancellationReason
         ? { cancellation_reason: paymentIntent.cancellationReason }
         : {}),
@@ -104,6 +148,38 @@ function isStripePaymentIntentStatus(value: unknown): value is StripePaymentInte
     value === "canceled" ||
     value === "succeeded"
   );
+}
+
+function isStripeCaptureMethod(value: unknown): value is StripeCaptureMethod {
+  return value === "automatic" || value === "automatic_async" || value === "manual";
+}
+
+function isStripeConfirmationMethod(value: unknown): value is StripeConfirmationMethod {
+  return value === "automatic" || value === "manual";
+}
+
+function optionalStripeId(value: unknown, prefix: string): string | undefined {
+  if (value === null || value === undefined) return undefined;
+  if (typeof value !== "string" || !value.startsWith(prefix) || value.length <= prefix.length) {
+    throw new StripeProtocolError(`Stripe PaymentIntent contains an invalid ${prefix} reference`);
+  }
+  return value;
+}
+
+function transferDestinationId(value: unknown): string | undefined {
+  if (value === null || value === undefined) return undefined;
+  if (!isRecord(value)) {
+    throw new StripeProtocolError("Stripe PaymentIntent transfer_data is invalid");
+  }
+  return optionalStripeId(value.destination, "acct_");
+}
+
+function optionalNonNegativeInteger(value: unknown): bigint | undefined {
+  if (value === null || value === undefined) return undefined;
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+    throw new StripeProtocolError("Stripe PaymentIntent application fee amount is invalid");
+  }
+  return BigInt(value);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
