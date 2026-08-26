@@ -32,6 +32,11 @@ function paymentIntent(overrides: Partial<NormalizedStripePaymentIntent> = {}): 
   };
 }
 
+function paymentIntentWithoutPaymentMethod(): NormalizedStripePaymentIntent {
+  const { paymentMethodId: _paymentMethodId, ...withoutPaymentMethod } = paymentIntent();
+  return withoutPaymentMethod;
+}
+
 function mandate(): AgentSpendMandate {
   return {
     id: "44444444-4444-4444-8444-444444444444",
@@ -41,7 +46,7 @@ function mandate(): AgentSpendMandate {
     policyId: "55555555-5555-4555-8555-555555555555",
     policyVersion: 1,
     currency: "USD",
-    maxBudgetMinor: 500n,
+    maxBudgetPerTransactionMinor: 500n,
     rollingDailyLimitMinor: 1_000n,
     approvedMerchantDomains: ["supplier.example"],
     approvedVendorIds: [],
@@ -54,6 +59,7 @@ function mandate(): AgentSpendMandate {
     },
     issuedAt: new Date("2026-08-26T15:00:00.000Z"),
     expiresAt: new Date("2026-09-26T15:00:00.000Z"),
+    signingKeyId: "mandate-k1",
   };
 }
 
@@ -120,7 +126,7 @@ describe("Stripe authoritative EconomicIntent", () => {
   });
 
   it("rejects a PaymentIntent without a pre-attached payment method", () => {
-    expect(() => normalized(paymentIntent({ paymentMethodId: undefined }))).toThrowError(
+    expect(() => normalized(paymentIntentWithoutPaymentMethod())).toThrowError(
       "must already have a server-visible payment method attached",
     );
   });
