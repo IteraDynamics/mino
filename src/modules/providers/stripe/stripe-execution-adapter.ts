@@ -27,6 +27,14 @@ export interface StripeExecutionContext {
   readonly paymentIntentId: string;
 }
 
+export interface PreparedStripeExecution {
+  readonly intent: EconomicIntent;
+  readonly decision: AuthorizationDecision;
+  readonly grant: SignedAuthorizationGrant;
+  readonly context: StripeExecutionContext;
+  readonly providerState: NormalizedStripePaymentIntent;
+}
+
 /** Provider adapter for a real Stripe PaymentIntent confirmation. */
 export class StripeExecutionAdapter
   implements EconomicExecutionAdapter<StripeExecutionContext, StripeProviderResponse>
@@ -35,9 +43,13 @@ export class StripeExecutionAdapter
 
   public constructor(private readonly client: StripePaymentIntentClient) {}
 
-  public async execute(
+  /**
+   * Final provider-authoritative preflight. The caller may durably record the
+   * execution attempt after this succeeds and before calling dispatchPrepared().
+   */
+  public async prepare(
     input: EconomicExecutionInput<StripeExecutionContext>,
-  ): Promise<StripeProviderResponse> {
+  ): Promise<PreparedStripeExecution> {
     if (input.intent.protocol !== this.protocol) {
       throw new Error("Stripe execution adapter refuses non-Stripe economic intent");
     }
@@ -56,19 +68,43 @@ export class StripeExecutionAdapter
     this.assertProviderEconomicBinding(paymentIntent, input.grant, input.context);
     this.assertAuthoritativeIntentStillMatches(paymentIntent, input);
 
+    return Object.freeze({
+      intent: input.intent,
+      decision: input.decision,
+      grant: input.grant,
+      context: input.context,
+      providerState: paymentIntent,
+    });
+  }
+
+  /**
+   * Economic dispatch. No mutable agent/provider fields are accepted here: the
+   * PaymentIntent reference, target, credential, and idempotency key all come from
+   * the already-authorized prepared execution.
+   */
+  public async dispatchPrepared(prepared: PreparedStripeExecution): Promise<StripeProviderResponse> {
     const confirmed = await this.client.confirmPaymentIntent({
-      authorization: input.context.authorization,
-      ...(input.context.target.accountId ? { accountId: input.context.target.accountId } : {}),
-      paymentIntentId: input.context.paymentIntentId,
-      idempotencyKey: input.intent.idempotencyKey,
+      authorization: prepared.context.authorization,
+      ...(prepared.context.target.accountId
+        ? { accountId: prepared.context.target.accountId }
+        : {}),
+      paymentIntentId: prepared.context.paymentIntentId,
+      idempotencyKey: prepared.intent.idempotencyKey,
     });
     if (confirmed.status < 200 || confirmed.status >= 300) {
       return confirmed;
     }
 
     const confirmedIntent = parseStripePaymentIntent(confirmed.body);
-    this.assertProviderEconomicBinding(confirmedIntent, input.grant, input.context);
+    this.assertProviderEconomicBinding(confirmedIntent, prepared.grant, prepared.context);
     return confirmed;
+  }
+
+  public async execute(
+    input: EconomicExecutionInput<StripeExecutionContext>,
+  ): Promise<StripeProviderResponse> {
+    const prepared = await this.prepare(input);
+    return this.dispatchPrepared(prepared);
   }
 
   private assertAuthoritativeIntentStillMatches(
