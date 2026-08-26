@@ -4,6 +4,7 @@ import type {
   EconomicReconciliationObservation,
 } from "../../execution/economic-reconciliation-adapter.js";
 import type { PaymentOutcomeRecord } from "../../payments/payment-outcome.store.js";
+import type { StripeExecutionTarget } from "./stripe-authoritative-intent.js";
 import {
   parseStripePaymentIntent,
   stripeEvidence,
@@ -11,18 +12,11 @@ import {
 } from "./stripe-payment-intent.js";
 import type { StripePaymentIntentClient } from "./stripe-payment-intent-client.js";
 
-export interface StripeProviderTarget {
-  readonly id: string;
-  readonly accountId: string;
-  readonly domain: string;
-  readonly active: boolean;
-}
-
 export interface StripeProviderTargetRegistry {
   getById(
     organizationId: string,
     providerTargetId: string,
-  ): Promise<StripeProviderTarget | undefined>;
+  ): Promise<StripeExecutionTarget | undefined>;
 }
 
 export interface StripeReconciliationAdapterDependencies {
@@ -31,14 +25,7 @@ export interface StripeReconciliationAdapterDependencies {
   readonly credentials: EconomicProviderCredentialProvider;
 }
 
-/**
- * Provider-specific interpretation of Stripe PaymentIntent state.
- *
- * `PaymentOutcomeRecord` still carries the current merchant/checkout-shaped field
- * names. For this proof, `merchantId` is the internal Stripe target registry key
- * and `checkoutSessionId` carries the PaymentIntent ID. That storage compatibility
- * is intentionally not promoted into provider-neutral semantics.
- */
+/** Provider-specific interpretation of durable Stripe PaymentIntent state. */
 export class StripeReconciliationAdapter implements EconomicReconciliationAdapter {
   public readonly protocol = "STRIPE" as const;
 
@@ -62,15 +49,15 @@ export class StripeReconciliationAdapter implements EconomicReconciliationAdapte
       outcome.organizationId,
       target.id,
     );
-    if (!authorization || !/^\S+\s+\S+$/.test(authorization.trim())) {
+    if (!authorization || !/^Bearer\s+\S+$/i.test(authorization.trim())) {
       return deferred("STRIPE_CREDENTIAL_UNAVAILABLE");
     }
 
     let upstream;
     try {
       upstream = await this.deps.client.retrievePaymentIntent({
-        authorization,
-        accountId: target.accountId,
+        authorization: authorization.trim(),
+        ...(target.accountId ? { accountId: target.accountId } : {}),
         paymentIntentId: outcome.checkoutSessionId,
       });
     } catch {
@@ -99,6 +86,9 @@ export class StripeReconciliationAdapter implements EconomicReconciliationAdapte
       paymentIntent.currency !== outcome.currency.toUpperCase()
     ) {
       return deferred("STRIPE_PAYMENT_INTENT_ECONOMICS_MISMATCH", upstream.status);
+    }
+    if (paymentIntent.livemode !== target.expectedLivemode) {
+      return deferred("STRIPE_PAYMENT_INTENT_MODE_MISMATCH", upstream.status);
     }
 
     if (paymentIntent.status === "succeeded") {
