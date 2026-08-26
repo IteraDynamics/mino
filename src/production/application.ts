@@ -320,6 +320,10 @@ export async function createProductionApplication(
       legacyDelegation,
       clock,
     );
+    const evaluator = new PolicyEvaluator({
+      generateId,
+      monotonicMicros: () => Math.floor(performance.now() * 1_000),
+    });
 
     const proxy = new CheckoutProxyService({
       mandateTokens,
@@ -328,10 +332,7 @@ export async function createProductionApplication(
       merchants,
       merchantClient,
       adapter: new ACPAdapter(),
-      evaluator: new PolicyEvaluator({
-        generateId,
-        monotonicMicros: () => Math.floor(performance.now() * 1_000),
-      }),
+      evaluator,
       reservations,
       paymentOutcomes,
       delegationAssertions: merchantClient,
@@ -365,6 +366,18 @@ export async function createProductionApplication(
       approvals,
       approvalAuthenticator,
       receipts: authorizationReceipts,
+      economicAuthorization: {
+        mandateTokens,
+        mandates,
+        agentRequests,
+        evaluator,
+        reservations,
+        paymentOutcomes,
+        approvals,
+        audit,
+        grants: authorizationGrants,
+        generateId,
+      },
       ...(adminAccess
         ? {
             adminAccess,
