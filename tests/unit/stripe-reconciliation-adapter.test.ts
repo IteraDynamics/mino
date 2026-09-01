@@ -90,6 +90,11 @@ function outcome(overrides: Partial<PaymentOutcomeRecord> = {}): PaymentOutcomeR
   };
 }
 
+function outcomeWithoutProviderBinding(): PaymentOutcomeRecord {
+  const { providerBindingDigest: _providerBindingDigest, ...withoutBinding } = outcome();
+  return withoutBinding;
+}
+
 function adapterWith(response: StripeProviderResponse) {
   const client: StripePaymentIntentClient = {
     async confirmPaymentIntent() {
@@ -185,7 +190,7 @@ describe("StripeReconciliationAdapter", () => {
 
   it("fails closed when the durable pre-dispatch provider binding is missing", async () => {
     const observation = await adapterWith(providerResponse("succeeded")).reconcile(
-      outcome({ providerBindingDigest: undefined }),
+      outcomeWithoutProviderBinding(),
     );
 
     expect(observation).toEqual({
