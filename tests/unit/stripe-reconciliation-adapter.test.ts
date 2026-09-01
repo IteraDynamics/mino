@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { PaymentOutcomeRecord } from "../../src/modules/payments/payment-outcome.store.js";
 import { PaymentOutcomeStatus } from "../../src/modules/payments/payment-outcome.store.js";
+import { stripeProviderBindingDigest } from "../../src/modules/providers/stripe/stripe-authoritative-intent.js";
+import { parseStripePaymentIntent } from "../../src/modules/providers/stripe/stripe-payment-intent.js";
 import { StripeReconciliationAdapter } from "../../src/modules/providers/stripe/stripe-reconciliation-adapter.js";
 import type {
   StripePaymentIntentClient,
@@ -9,6 +11,61 @@ import type {
 
 const NOW = new Date("2026-08-19T20:30:00.000Z");
 const ORG_ID = "11111111-1111-4111-8111-111111111111";
+const target = {
+  id: "stripe-target-1",
+  organizationId: ORG_ID,
+  accountId: "acct_123",
+  domain: "supplier.example",
+  expectedLivemode: false,
+  active: true,
+} as const;
+
+function providerResponse(
+  status: string,
+  args: {
+    amount?: number;
+    id?: string;
+    livemode?: boolean;
+    paymentMethod?: string;
+    captureMethod?: string;
+    confirmationMethod?: string;
+    onBehalfOf?: string | null;
+    transferDestination?: string | null;
+    applicationFeeAmount?: number | null;
+  } = {},
+): StripeProviderResponse {
+  return {
+    status: 200,
+    body: {
+      id: args.id ?? "pi_test37",
+      object: "payment_intent",
+      amount: args.amount ?? 5000,
+      currency: "usd",
+      status,
+      capture_method: args.captureMethod ?? "automatic",
+      confirmation_method: args.confirmationMethod ?? "manual",
+      livemode: args.livemode ?? false,
+      payment_method: args.paymentMethod ?? "pm_test37",
+      on_behalf_of: args.onBehalfOf ?? null,
+      transfer_data: args.transferDestination
+        ? { destination: args.transferDestination }
+        : null,
+      application_fee_amount: args.applicationFeeAmount ?? null,
+      client_secret: "pi_test37_secret_should_never_be_persisted",
+    },
+    headers: {
+      "request-id": "req_stripe_reconcile_1",
+      "set-cookie": "secret=1",
+    },
+  };
+}
+
+function originalBindingDigest(): string {
+  return stripeProviderBindingDigest(
+    parseStripePaymentIntent(providerResponse("requires_confirmation").body),
+    target,
+  );
+}
 
 function outcome(overrides: Partial<PaymentOutcomeRecord> = {}): PaymentOutcomeRecord {
   return {
@@ -20,6 +77,7 @@ function outcome(overrides: Partial<PaymentOutcomeRecord> = {}): PaymentOutcomeR
     reservationId: "reservation-1",
     idempotencyKey: "idem-37",
     requestDigest: "digest-37",
+    providerBindingDigest: originalBindingDigest(),
     merchantId: "stripe-target-1",
     merchantDomain: "supplier.example",
     checkoutSessionId: "pi_test37",
@@ -32,29 +90,9 @@ function outcome(overrides: Partial<PaymentOutcomeRecord> = {}): PaymentOutcomeR
   };
 }
 
-function providerResponse(
-  status: string,
-  args: { amount?: number; id?: string; livemode?: boolean } = {},
-): StripeProviderResponse {
-  return {
-    status: 200,
-    body: {
-      id: args.id ?? "pi_test37",
-      object: "payment_intent",
-      amount: args.amount ?? 5000,
-      currency: "usd",
-      status,
-      capture_method: "automatic",
-      confirmation_method: "manual",
-      livemode: args.livemode ?? false,
-      payment_method: "pm_test37",
-      client_secret: "pi_test37_secret_should_never_be_persisted",
-    },
-    headers: {
-      "request-id": "req_stripe_reconcile_1",
-      "set-cookie": "secret=1",
-    },
-  };
+function outcomeWithoutProviderBinding(): PaymentOutcomeRecord {
+  const { providerBindingDigest: _providerBindingDigest, ...withoutBinding } = outcome();
+  return withoutBinding;
 }
 
 function adapterWith(response: StripeProviderResponse) {
@@ -71,14 +109,7 @@ function adapterWith(response: StripeProviderResponse) {
     targets: {
       async getById(organizationId, providerTargetId) {
         return organizationId === ORG_ID && providerTargetId === "stripe-target-1"
-          ? {
-              id: "stripe-target-1",
-              organizationId: ORG_ID,
-              accountId: "acct_123",
-              domain: "supplier.example",
-              expectedLivemode: false,
-              active: true,
-            }
+          ? target
           : undefined;
       },
     },
@@ -153,6 +184,45 @@ describe("StripeReconciliationAdapter", () => {
     expect(observation).toEqual({
       disposition: "DEFERRED",
       errorCode: "STRIPE_PAYMENT_INTENT_MODE_MISMATCH",
+      providerStatus: 200,
+    });
+  });
+
+  it("fails closed when the durable pre-dispatch provider binding is missing", async () => {
+    const observation = await adapterWith(providerResponse("succeeded")).reconcile(
+      outcomeWithoutProviderBinding(),
+    );
+
+    expect(observation).toEqual({
+      disposition: "DEFERRED",
+      errorCode: "STRIPE_PROVIDER_BINDING_MISSING",
+      providerStatus: 200,
+    });
+  });
+
+  it("fails closed when payment method drifts from the durable pre-dispatch binding", async () => {
+    const observation = await adapterWith(
+      providerResponse("succeeded", { paymentMethod: "pm_replaced" }),
+    ).reconcile(outcome());
+
+    expect(observation).toEqual({
+      disposition: "DEFERRED",
+      errorCode: "STRIPE_PROVIDER_BINDING_MISMATCH",
+      providerStatus: 200,
+    });
+  });
+
+  it("fails closed when destination or fee semantics drift from the durable binding", async () => {
+    const observation = await adapterWith(
+      providerResponse("succeeded", {
+        transferDestination: "acct_other",
+        applicationFeeAmount: 50,
+      }),
+    ).reconcile(outcome());
+
+    expect(observation).toEqual({
+      disposition: "DEFERRED",
+      errorCode: "STRIPE_PROVIDER_BINDING_MISMATCH",
       providerStatus: 200,
     });
   });

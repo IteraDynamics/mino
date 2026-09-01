@@ -22,6 +22,7 @@ export interface PaymentOutcomeRecord {
   readonly reservationId: string;
   readonly idempotencyKey: string;
   readonly requestDigest: string;
+  readonly providerBindingDigest?: string;
   readonly merchantId: string;
   readonly merchantDomain: string;
   readonly checkoutSessionId: string;
@@ -51,6 +52,7 @@ export interface BeginPaymentOutcomeInput {
   readonly reservationId: string;
   readonly idempotencyKey: string;
   readonly requestDigest: string;
+  readonly providerBindingDigest?: string;
   readonly merchantId: string;
   readonly merchantDomain: string;
   readonly checkoutSessionId: string;
@@ -133,6 +135,7 @@ interface PaymentOutcomeRow extends QueryResultRow {
   reservationId: string;
   idempotencyKey: string;
   requestDigest: string;
+  providerBindingDigest: string | null;
   merchantId: string;
   merchantDomain: string;
   checkoutSessionId: string;
@@ -175,15 +178,15 @@ export class PostgresPaymentOutcomeStore implements ReconciliationPaymentOutcome
     const inserted = await this.sql.query<PaymentOutcomeRow>(
       `insert into "PaymentOutcome" (
          "id", "organizationId", "userId", "agentId", "mandateId",
-         "reservationId", "idempotencyKey", "requestDigest", "merchantId",
-         "merchantDomain", "checkoutSessionId", "amountMinor", "currency",
+         "reservationId", "idempotencyKey", "requestDigest", "providerBindingDigest",
+         "merchantId", "merchantDomain", "checkoutSessionId", "amountMinor", "currency",
          "status", "forwardedAt", "createdAt", "updatedAt"
        ) values (
          $1::uuid, $2::uuid, $3::uuid, $4::uuid, $5::uuid,
-         $6, $7, $8, $9, $10, $11, $12::bigint, $13,
-         'FORWARDING', $14, $14, $14
+         $6, $7, $8, $9, $10, $11, $12, $13::bigint, $14,
+         'FORWARDING', $15, $15, $15
        )
-       on conflict ("organizationId", "idempotencyKey") do nothing
+       on conflict do nothing
        returning *`,
       [
         input.id,
@@ -194,6 +197,7 @@ export class PostgresPaymentOutcomeStore implements ReconciliationPaymentOutcome
         input.reservationId,
         input.idempotencyKey,
         input.requestDigest,
+        input.providerBindingDigest ?? null,
         input.merchantId,
         input.merchantDomain,
         input.checkoutSessionId,
@@ -209,17 +213,26 @@ export class PostgresPaymentOutcomeStore implements ReconciliationPaymentOutcome
     }
 
     const existing = await this.getByIdempotency(input.organizationId, input.idempotencyKey);
-    if (!existing) {
-      throw new Error("Payment outcome uniqueness conflict could not be reloaded");
+    if (existing) {
+      return {
+        kind:
+          existing.requestDigest === input.requestDigest
+            ? BeginPaymentOutcomeKind.EXISTING
+            : BeginPaymentOutcomeKind.CONFLICT,
+        outcome: existing,
+      };
     }
 
-    return {
-      kind:
-        existing.requestDigest === input.requestDigest
-          ? BeginPaymentOutcomeKind.EXISTING
-          : BeginPaymentOutcomeKind.CONFLICT,
-      outcome: existing,
-    };
+    const consequence = await this.getByProviderConsequence(
+      input.organizationId,
+      input.merchantId,
+      input.checkoutSessionId,
+    );
+    if (consequence) {
+      return { kind: BeginPaymentOutcomeKind.CONFLICT, outcome: consequence };
+    }
+
+    throw new Error("Payment outcome uniqueness conflict could not be reloaded");
   }
 
   public async markUnknown(
@@ -402,6 +415,22 @@ export class PostgresPaymentOutcomeStore implements ReconciliationPaymentOutcome
     );
   }
 
+  private async getByProviderConsequence(
+    organizationId: string,
+    merchantId: string,
+    checkoutSessionId: string,
+  ): Promise<PaymentOutcomeRecord | undefined> {
+    const result = await this.sql.query<PaymentOutcomeRow>(
+      `select *
+         from "PaymentOutcome"
+        where "organizationId" = $1::uuid
+          and "merchantId" = $2
+          and "checkoutSessionId" = $3`,
+      [organizationId, merchantId, checkoutSessionId],
+    );
+    return result.rows[0] ? mapRow(result.rows[0]) : undefined;
+  }
+
   private async updateOne(
     statement: string,
     values: unknown[],
@@ -435,6 +464,7 @@ function mapRow(row: PaymentOutcomeRow): PaymentOutcomeRecord {
     reservationId: row.reservationId,
     idempotencyKey: row.idempotencyKey,
     requestDigest: row.requestDigest,
+    ...(row.providerBindingDigest ? { providerBindingDigest: row.providerBindingDigest } : {}),
     merchantId: row.merchantId,
     merchantDomain: row.merchantDomain,
     checkoutSessionId: row.checkoutSessionId,

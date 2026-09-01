@@ -9,6 +9,7 @@ import type {
 } from "../../execution/execution-adapter.js";
 import {
   normalizeStripeAuthoritativeIntent,
+  stripeProviderBindingDigest,
   type StripeExecutionTarget,
 } from "./stripe-authoritative-intent.js";
 import {
@@ -97,6 +98,7 @@ export class StripeExecutionAdapter
 
     const confirmedIntent = parseStripePaymentIntent(confirmed.body);
     this.assertProviderEconomicBinding(confirmedIntent, prepared.grant, prepared.context);
+    this.assertProviderConsequenceBinding(confirmedIntent, prepared);
     return confirmed;
   }
 
@@ -135,6 +137,17 @@ export class StripeExecutionAdapter
     });
     if (rebound.intentDigest !== input.decision.intentDigest) {
       throw new Error("Authoritative Stripe PaymentIntent state changed after authorization");
+    }
+  }
+
+  private assertProviderConsequenceBinding(
+    paymentIntent: NormalizedStripePaymentIntent,
+    prepared: PreparedStripeExecution,
+  ): void {
+    const expected = stripeProviderBindingDigest(prepared.providerState, prepared.context.target);
+    const observed = stripeProviderBindingDigest(paymentIntent, prepared.context.target);
+    if (observed !== expected) {
+      throw new Error("Stripe provider consequence changed after authorization");
     }
   }
 

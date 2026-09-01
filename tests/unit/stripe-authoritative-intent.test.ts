@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 import { authorityReferenceFromMandate, bindEconomicIntent } from "../../src/domain/economic/canonical-economic-intent.js";
 import type { AgentSpendMandate } from "../../src/domain/mandates/mandate.types.js";
 import { ApprovalMode } from "../../src/domain/mandates/mandate.types.js";
-import { normalizeStripeAuthoritativeIntent } from "../../src/modules/providers/stripe/stripe-authoritative-intent.js";
+import {
+  normalizeStripeAuthoritativeIntent,
+  stripeProviderBindingDigest,
+} from "../../src/modules/providers/stripe/stripe-authoritative-intent.js";
 import type { NormalizedStripePaymentIntent } from "../../src/modules/providers/stripe/stripe-payment-intent.js";
 
 const ORG_ID = "11111111-1111-4111-8111-111111111111";
@@ -91,6 +94,27 @@ describe("Stripe authoritative EconomicIntent", () => {
     });
     expect(intent.authoritativeStateDigest).toMatch(/^[A-Za-z0-9_-]{43}$/);
     expect(bound.intentDigest).toMatch(/^[A-Za-z0-9_-]{43}$/);
+  });
+
+  it("keeps provider binding stable across legitimate status transition", () => {
+    const before = stripeProviderBindingDigest(paymentIntent(), target);
+    const after = stripeProviderBindingDigest(paymentIntent({ status: "succeeded" }), target);
+    expect(after).toBe(before);
+  });
+
+  it("changes provider binding when execution material changes", () => {
+    const first = stripeProviderBindingDigest(paymentIntent(), target);
+    const changedPaymentMethod = stripeProviderBindingDigest(
+      paymentIntent({ paymentMethodId: "pm_replaced" }),
+      target,
+    );
+    const changedFee = stripeProviderBindingDigest(
+      paymentIntent({ applicationFeeAmount: 25n }),
+      target,
+    );
+
+    expect(changedPaymentMethod).not.toBe(first);
+    expect(changedFee).not.toBe(first);
   });
 
   it("changes the canonical intent when an attached payment method changes", () => {

@@ -50,22 +50,8 @@ export function normalizeStripeAuthoritativeIntent(
   }
 
   const authoritativeProjection = {
-    paymentIntentId: paymentIntent.id,
-    amountMinor: paymentIntent.amount,
-    currency: paymentIntent.currency,
+    ...stripeProviderBindingProjection(paymentIntent, target),
     status: paymentIntent.status,
-    captureMethod: paymentIntent.captureMethod,
-    confirmationMethod: paymentIntent.confirmationMethod,
-    livemode: paymentIntent.livemode,
-    paymentMethodId: paymentIntent.paymentMethodId,
-    onBehalfOf: paymentIntent.onBehalfOf ?? null,
-    transferDestination: paymentIntent.transferDestination ?? null,
-    applicationFeeAmountMinor: paymentIntent.applicationFeeAmount ?? null,
-    target: {
-      id: target.id,
-      domain: canonicalDomain(target.domain),
-      accountId: target.accountId ?? null,
-    },
   };
 
   const counterpartyIdentifiers = [
@@ -107,6 +93,19 @@ export function normalizeStripeAuthoritativeIntent(
   };
 }
 
+/**
+ * Durable digest of the provider facts that define the economic consequence.
+ * Status is intentionally excluded so the digest survives the legitimate
+ * requires_confirmation -> processing/succeeded/canceled transition.
+ */
+export function stripeProviderBindingDigest(
+  paymentIntent: NormalizedStripePaymentIntent,
+  target: StripeExecutionTarget,
+): string {
+  assertTarget(target);
+  return sha256Base64Url(canonicalJson(stripeProviderBindingProjection(paymentIntent, target)));
+}
+
 export function stripeExecutionRequestDigest(
   targetId: string,
   paymentIntentId: string,
@@ -119,6 +118,29 @@ export function stripeExecutionRequestDigest(
       paymentIntentId: paymentIntentId.trim(),
     }),
   );
+}
+
+function stripeProviderBindingProjection(
+  paymentIntent: NormalizedStripePaymentIntent,
+  target: StripeExecutionTarget,
+) {
+  return {
+    paymentIntentId: paymentIntent.id,
+    amountMinor: paymentIntent.amount,
+    currency: paymentIntent.currency,
+    captureMethod: paymentIntent.captureMethod,
+    confirmationMethod: paymentIntent.confirmationMethod,
+    livemode: paymentIntent.livemode,
+    paymentMethodId: paymentIntent.paymentMethodId ?? null,
+    onBehalfOf: paymentIntent.onBehalfOf ?? null,
+    transferDestination: paymentIntent.transferDestination ?? null,
+    applicationFeeAmountMinor: paymentIntent.applicationFeeAmount ?? null,
+    target: {
+      id: target.id,
+      domain: canonicalDomain(target.domain),
+      accountId: target.accountId ?? null,
+    },
+  };
 }
 
 function assertTarget(target: StripeExecutionTarget): void {
