@@ -4,7 +4,10 @@ import type {
   EconomicReconciliationObservation,
 } from "../../execution/economic-reconciliation-adapter.js";
 import type { PaymentOutcomeRecord } from "../../payments/payment-outcome.store.js";
-import type { StripeExecutionTarget } from "./stripe-authoritative-intent.js";
+import {
+  stripeProviderBindingDigest,
+  type StripeExecutionTarget,
+} from "./stripe-authoritative-intent.js";
 import {
   parseStripePaymentIntent,
   stripeEvidence,
@@ -89,6 +92,12 @@ export class StripeReconciliationAdapter implements EconomicReconciliationAdapte
     }
     if (paymentIntent.livemode !== target.expectedLivemode) {
       return deferred("STRIPE_PAYMENT_INTENT_MODE_MISMATCH", upstream.status);
+    }
+    if (!outcome.providerBindingDigest) {
+      return deferred("STRIPE_PROVIDER_BINDING_MISSING", upstream.status);
+    }
+    if (stripeProviderBindingDigest(paymentIntent, target) !== outcome.providerBindingDigest) {
+      return deferred("STRIPE_PROVIDER_BINDING_MISMATCH", upstream.status);
     }
 
     if (paymentIntent.status === "succeeded") {
