@@ -27,6 +27,7 @@ const MANDATE_ID = "44444444-4444-4444-8444-444444444444";
 const POLICY_ID = "55555555-5555-4555-8555-555555555555";
 const PAYMENT_INTENT_ID = "pi_test51";
 const RESERVATION_ID = "reservation-51";
+const CONFLICTING_RESERVATION_ID = "reservation-51-conflicting-attempt";
 const OUTCOME_ID = "66666666-6666-4666-8666-666666666666";
 const IDEMPOTENCY_KEY = "personal-stripe-idem-51";
 const TOKEN_JTI = "mandate-token-jti-51";
@@ -84,7 +85,7 @@ function stripeBody(status: "requires_confirmation" | "succeeded", paymentMethod
   };
 }
 
-function outcome(requestDigest: string): PaymentOutcomeRecord {
+function outcome(requestDigest: string, providerBindingDigest?: string): PaymentOutcomeRecord {
   return {
     id: OUTCOME_ID,
     organizationId: ORG_ID,
@@ -94,6 +95,7 @@ function outcome(requestDigest: string): PaymentOutcomeRecord {
     reservationId: RESERVATION_ID,
     idempotencyKey: IDEMPOTENCY_KEY,
     requestDigest,
+    ...(providerBindingDigest ? { providerBindingDigest } : {}),
     merchantId: target.id,
     merchantDomain: target.domain,
     checkoutSessionId: PAYMENT_INTENT_ID,
@@ -106,8 +108,9 @@ function outcome(requestDigest: string): PaymentOutcomeRecord {
 }
 
 describe("PersonalStripeExecutionService", () => {
-  it("uses only the server credential, durably records authorization before confirm, and never confirms twice on exact replay", async () => {
+  it("uses only the server credential, durably records authorization before confirm, fences a second consequence identity, and never confirms twice on exact replay", async () => {
     const events: string[] = [];
+    const releasedReservations: string[] = [];
     let retrieves = 0;
     let confirms = 0;
     const providerAuthorizations: string[] = [];
@@ -198,11 +201,14 @@ describe("PersonalStripeExecutionService", () => {
         },
       },
       reservations: {
-        async tryReserve() {
+        async tryReserve(input) {
           events.push("reserve");
           return {
             status: ReservationStatus.RESERVED,
-            reservationId: RESERVATION_ID,
+            reservationId:
+              input.idempotencyKey === IDEMPOTENCY_KEY
+                ? RESERVATION_ID
+                : CONFLICTING_RESERVATION_ID,
             spend: {
               committedDailySpend: { currency: "USD", minorUnits: 0n },
               reservedDailySpend: { currency: "USD", minorUnits: 125n },
@@ -223,8 +229,9 @@ describe("PersonalStripeExecutionService", () => {
           events.push("commit");
           return true;
         },
-        async release() {
+        async release(_mandateId, reservationId) {
           events.push("release");
+          releasedReservations.push(reservationId);
           return true;
         },
         async releaseForApproval() {
@@ -242,7 +249,11 @@ describe("PersonalStripeExecutionService", () => {
         },
         async begin(input) {
           events.push("outcome-begin");
-          storedOutcome = outcome(input.requestDigest);
+          expect(input.providerBindingDigest).toMatch(/^[A-Za-z0-9_-]{43}$/);
+          if (input.idempotencyKey !== IDEMPOTENCY_KEY && storedOutcome) {
+            return { kind: BeginPaymentOutcomeKind.CONFLICT, outcome: storedOutcome };
+          }
+          storedOutcome = outcome(input.requestDigest, input.providerBindingDigest);
           return { kind: BeginPaymentOutcomeKind.CREATED, outcome: storedOutcome };
         },
         async markUnknown(_outcomeId, args) {
@@ -350,6 +361,7 @@ describe("PersonalStripeExecutionService", () => {
 
     const first = await service.confirmPaymentIntent(request);
     expect(first.upstream?.body).toMatchObject({ status: "succeeded" });
+    expect(storedOutcome?.providerBindingDigest).toMatch(/^[A-Za-z0-9_-]{43}$/);
     expect(retrieves).toBe(2);
     expect(confirms).toBe(1);
     expect(providerAuthorizations).toEqual([
@@ -379,5 +391,25 @@ describe("PersonalStripeExecutionService", () => {
     expect(second.paymentOutcomeId).toBe(OUTCOME_ID);
     expect(retrieves).toBe(2);
     expect(confirms).toBe(1);
+
+    await expect(
+      service.confirmPaymentIntent({
+        ...request,
+        requestId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        idempotencyKey: "different-mino-idempotency-key",
+        security: {
+          ...request.security,
+          agentProof: {
+            ...request.security.agentProof,
+            nonce: "fresh_nonce_nonce_53",
+            signature: "fresh-test-signature-2",
+          },
+        },
+      }),
+    ).rejects.toThrow("Idempotency key was reused for a different request");
+
+    expect(confirms).toBe(1);
+    expect(releasedReservations).toContain(CONFLICTING_RESERVATION_ID);
+    expect(events.lastIndexOf("release")).toBeGreaterThan(events.lastIndexOf("outcome-begin"));
   });
 });
