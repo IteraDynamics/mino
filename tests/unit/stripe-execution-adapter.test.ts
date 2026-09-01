@@ -115,7 +115,10 @@ function authorized(initial = paymentIntent()): {
   };
 }
 
-function harness(current: NormalizedStripePaymentIntent) {
+function harness(
+  current: NormalizedStripePaymentIntent,
+  confirmed: NormalizedStripePaymentIntent = paymentIntent({ status: "succeeded" }),
+) {
   let retrieves = 0;
   let confirms = 0;
   let confirmedIdempotencyKey: string | undefined;
@@ -128,7 +131,7 @@ function harness(current: NormalizedStripePaymentIntent) {
     async confirmPaymentIntent(input) {
       confirms += 1;
       confirmedIdempotencyKey = input.idempotencyKey;
-      return providerResponse(paymentIntent({ status: "succeeded" }));
+      return providerResponse(confirmed);
     },
   };
 
@@ -249,5 +252,30 @@ describe("StripeExecutionAdapter", () => {
     ).rejects.toThrowError("Stripe PaymentIntent economics do not match the AuthorizationGrant");
     expect(h.state().retrieves).toBe(1);
     expect(h.state().confirms).toBe(0);
+  });
+
+  it("rejects terminal provider evidence when payment method drifts after final preflight", async () => {
+    const authorization = authorized();
+    const h = harness(
+      paymentIntent(),
+      paymentIntent({ status: "succeeded", paymentMethodId: "pm_replaced_after_preflight" }),
+    );
+    const grant = authorization.grants.issue(authorization.intent, authorization.decision, NOW);
+
+    await expect(
+      h.adapter.execute({
+        intent: authorization.intent,
+        decision: authorization.decision,
+        grant,
+        now: NOW,
+        context: {
+          authorization: "Bearer rk_test_server_only",
+          target,
+          paymentIntentId: "pi_test51",
+        },
+      }),
+    ).rejects.toThrowError("Stripe provider consequence changed after authorization");
+    expect(h.state().retrieves).toBe(1);
+    expect(h.state().confirms).toBe(1);
   });
 });
