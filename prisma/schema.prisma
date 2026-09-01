@@ -348,15 +348,16 @@ model PaymentOutcome {
   agentId        String @db.Uuid
   mandateId      String @db.Uuid
 
-  reservationId     String @unique
-  idempotencyKey    String
-  requestDigest     String
-  merchantId        String
-  merchantDomain    String
-  checkoutSessionId String
-  amountMinor       BigInt @db.BigInt
-  currency          String @db.Char(3)
-  status            PaymentOutcomeStatus @default(FORWARDING)
+  reservationId        String @unique
+  idempotencyKey       String
+  requestDigest        String
+  providerBindingDigest String?
+  merchantId           String
+  merchantDomain       String
+  checkoutSessionId    String
+  amountMinor          BigInt @db.BigInt
+  currency             String @db.Char(3)
+  status               PaymentOutcomeStatus @default(FORWARDING)
 
   upstreamStatus  Int?
   responseBody    Json?
@@ -380,6 +381,7 @@ model PaymentOutcome {
   receipt      AuthorizationReceipt?
 
   @@unique([organizationId, idempotencyKey])
+  @@unique([organizationId, merchantId, checkoutSessionId])
   @@index([organizationId, status, updatedAt])
   @@index([mandateId, status, updatedAt])
   @@index([checkoutSessionId, status])
