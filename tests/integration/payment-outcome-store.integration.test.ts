@@ -86,7 +86,15 @@ integration("PostgresPaymentOutcomeStore", () => {
          array['merchant.example'], array[]::text[], array[]::text[], 'AUTO_APPROVE',
          10, 60, 5, 'delegation-hash', 'mino-k1', 'ACTIVE', $6, $7
        )`,
-      [ids.mandate, ids.organization, ids.user, ids.agent, ids.policy, now, new Date(now.getTime() + 3600000)],
+      [
+        ids.mandate,
+        ids.organization,
+        ids.user,
+        ids.agent,
+        ids.policy,
+        now,
+        new Date(now.getTime() + 3600000),
+      ],
     );
   });
 
@@ -94,7 +102,14 @@ integration("PostgresPaymentOutcomeStore", () => {
     await pool.end();
   });
 
-  function beginInput(args: { id: string; reservationId: string; digest?: string; key?: string }) {
+  function beginInput(args: {
+    id: string;
+    reservationId: string;
+    digest?: string;
+    key?: string;
+    providerBindingDigest?: string;
+    checkoutSessionId?: string;
+  }) {
     return {
       id: args.id,
       organizationId: ids.organization,
@@ -104,9 +119,10 @@ integration("PostgresPaymentOutcomeStore", () => {
       reservationId: args.reservationId,
       idempotencyKey: args.key ?? "idem-outcome-1",
       requestDigest: args.digest ?? "digest-1",
+      providerBindingDigest: args.providerBindingDigest ?? "provider-binding-1",
       merchantId: "merchant-1",
       merchantDomain: "merchant.example",
-      checkoutSessionId: "cs_1",
+      checkoutSessionId: args.checkoutSessionId ?? "cs_1",
       amountMinor: 5000n,
       currency: "USD",
       now,
@@ -135,9 +151,41 @@ integration("PostgresPaymentOutcomeStore", () => {
     );
 
     expect(first.kind).toBe(BeginPaymentOutcomeKind.CREATED);
+    expect(first.outcome.providerBindingDigest).toBe("provider-binding-1");
     expect(replay.kind).toBe(BeginPaymentOutcomeKind.EXISTING);
     expect(replay.outcome.id).toBe(first.outcome.id);
     expect(conflict.kind).toBe(BeginPaymentOutcomeKind.CONFLICT);
+  });
+
+  it("fences the same external provider consequence across different Mino idempotency keys", async () => {
+    const first = await store.begin(
+      beginInput({
+        id: "10000000-0000-4000-8000-000000000011",
+        reservationId: "reservation-consequence-1",
+        key: "idem-consequence-1",
+      }),
+    );
+    const conflict = await store.begin(
+      beginInput({
+        id: "10000000-0000-4000-8000-000000000012",
+        reservationId: "reservation-consequence-2",
+        key: "idem-consequence-2",
+      }),
+    );
+
+    expect(first.kind).toBe(BeginPaymentOutcomeKind.CREATED);
+    expect(conflict.kind).toBe(BeginPaymentOutcomeKind.CONFLICT);
+    expect(conflict.outcome.id).toBe(first.outcome.id);
+
+    const count = await pool.query<{ count: string }>(
+      `select count(*)::text as "count"
+         from "PaymentOutcome"
+        where "organizationId" = $1::uuid
+          and "merchantId" = 'merchant-1'
+          and "checkoutSessionId" = 'cs_1'`,
+      [ids.organization],
+    );
+    expect(count.rows[0]?.count).toBe("1");
   });
 
   it("persists unknown transport state and later resolves it to success", async () => {
