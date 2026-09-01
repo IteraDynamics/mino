@@ -37,6 +37,7 @@ import {
 import {
   normalizeStripeAuthoritativeIntent,
   stripeExecutionRequestDigest,
+  stripeProviderBindingDigest,
   type StripeExecutionTarget,
 } from "../providers/stripe/stripe-authoritative-intent.js";
 import { StripeExecutionAdapter } from "../providers/stripe/stripe-execution-adapter.js";
@@ -306,6 +307,7 @@ export class PersonalStripeExecutionService {
       reservationId,
       idempotencyKey: input.idempotencyKey,
       requestDigest,
+      providerBindingDigest: stripeProviderBindingDigest(prepared.providerState, target),
       merchantId: target.id,
       merchantDomain: target.domain,
       checkoutSessionId: input.paymentIntentId,
@@ -314,6 +316,10 @@ export class PersonalStripeExecutionService {
       now: input.now,
     });
     if (begun.kind === BeginPaymentOutcomeKind.CONFLICT) {
+      const released = await this.deps.reservations.release(auth.mandate.id, reservationId);
+      if (!released) {
+        throw new Error("Provider consequence conflict reservation could not be released");
+      }
       throw new IdempotencyConflictError();
     }
     if (begun.kind === BeginPaymentOutcomeKind.EXISTING) {
