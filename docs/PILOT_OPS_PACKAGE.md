@@ -264,17 +264,25 @@ Mino does not ship a vendor-specific alert transport; the pilot host must attach
 
 Live money is **not** implied by merging code or by a successful sandbox PaymentIntent.
 
-All of the following are required:
+All of the following are required before any live credential is mounted:
 
-1. P0 ops package drills completed: backup restore, Redis reconstruction, alert routing verified.
+1. P0 ops package drills completed and recorded: Postgres backup/restore, Redis reconstruction, alert routing verified, **and** audit-checkpoint **retention drill** (external retained head exists; `audit.verify` succeeds against that retained head — not DB-only).
 2. `docs/PILOT_ACCEPTANCE_CHECKLIST.md` fully passed on **sandbox** for the partner wedge.
-3. Security live-money pass on the P0/P1 surfaces actually enabled (admin, Personal, provider adapter, consequence fence / `providerBindingDigest` handling).
-4. Explicit founder confirmation to use live provider credentials.
-5. Separate live credential mounts (never reuse sandbox secrets); livemode binding enforced by adapter.
-6. Tight amount caps, closely watched reconciliation alerts, and a documented abort (revoke mandates / suspend agent / disable provider target).
-7. Incident owner named and reachable for the live window.
+3. **Written Security live-money artifact** for the exact surfaces enabled in this pilot (admin / Personal / provider adapter / consequence fence / `providerBindingDigest` handling), listing findings and disposition. A checkbox alone is not sign-off.
+4. Explicit founder confirmation to use live provider credentials for a named, time-boxed live window.
+5. **Livemode cutover fail-closed (Eng-verifiable):**
+   - live credential mounts are physically separate from sandbox mounts (never the same files/paths);
+   - adapter rejects wrong mode (sandbox credential or `livemode=false` material while live is selected, and the reverse);
+   - wrong or drifting `providerBindingDigest` / economic projection **denies** terminal acceptance (no operator override to invent terminal truth).
+6. **Live merchant/provider targets** are organization registry-scoped; live credentials exist only for those registered targets — no ad-hoc upstream URLs or unregistered destinations.
+7. **Numeric live caps + abort runbook** written before cutover:
+   - per-transaction and daily caps (minor units) for the live window;
+   - named abort owner reachable for the window;
+   - mandatory first moves on abort (no four-eyes wait): fail-closed **mandate revoke**, **suspend agent**, and/or **disable provider/merchant target**;
+   - time-boxed window end; caps and abort path re-confirmed if extended.
+8. Incident owner named and reachable for the live window; reconciliation alerts watched for the full window.
 
-Until then: sandbox credentials only.
+Until every item above is true: sandbox credentials only.
 
 ---
 
@@ -288,7 +296,19 @@ Until then: sandbox credentials only.
 
 Concierge support for the design partner goes through GTM and Eng; partners do not get database access.
 
-**Forbidden during incidents:** force-success payment outcomes, manual allowance release outside governed codepaths, rewriting audit history, or bypassing four-eyes for mandate issue / policy activate.
+**Forbidden during incidents (fail closed — do not do these under pressure):**
+
+- inventing *any* terminal payment outcome (success **or** failure) without provider/merchant-authoritative evidence;
+- clearing or releasing reconciliation holds / allowance by assertion;
+- force-success, force-failure, or manual allowance release outside governed codepaths;
+- rewriting, truncating, or re-signing audit history;
+- disabling audit export or checkpoint retention to restore service;
+- bypassing four-eyes for `mandate.issue` / `policy.activate`;
+- widening spend caps or re-issuing mandates under incident pressure without four-eyes where those actions are governed;
+- swapping sandbox and live credentials mid-incident;
+- confirming or capturing money in a provider dashboard / UI and then backfilling Mino to match.
+
+Abort authority-removing actions (`mandate.revoke`, agent suspend, merchant/provider deactivate) remain direct RBAC so an authorized operator can fail closed immediately without waiting for a second administrator.
 
 ---
 
