@@ -23,6 +23,7 @@ Record: partner name, date (America/New_York), `main` SHA, operator(s), pass/fai
 - [ ] At least one real **ALLOW** (sandbox)
 - [ ] At least one policy **BLOCK**
 - [ ] At least one **transaction-level human approval** (soft-limit path): approve, then exact idempotent retry, then merchant/provider-authoritative revalidation before ALLOW
+- [ ] Soft approval **cannot** override a hard **BLOCK** (restricted category / identity / merchant / velocity / revoked mandate / other hard controls remain non-overridable)
 - [ ] Immediate **fail-closed mandate revoke** (subsequent agent attempts denied without waiting on four-eyes)
 
 ## Administrative governance
@@ -51,4 +52,4 @@ Record: partner name, date (America/New_York), `main` SHA, operator(s), pass/fai
 | Security (sandbox only) | | pass / fail | |
 | Company lead | | pass / fail | |
 
-**Live money:** not part of this checklist. Requires ops drills + Security live-money pass + explicit founder confirmation.
+**Live money:** not part of this checklist. Requires ops drills (including retention) + written Security live-money artifact + explicit founder confirmation per `docs/PILOT_OPS_PACKAGE.md` section 8.
