@@ -4,17 +4,19 @@ This documents how the **Railway** concierge sandbox host differs from the harde
 
 Scope: sandbox pilot #1 only. Fly (or equivalent private-net shape) remains the intended path **before live money** (see `docs/PILOT_OPS_PACKAGE.md` §8).
 
+Verified bring-up (2026-09-12): project `mino-sandbox-pilot`, app `https://mino-production-0b40.up.railway.app` (`/healthz` + `/readyz` 200).
+
 ## What stays the same (non-negotiable)
 
 | Requirement | How we satisfy it on Railway |
 | --- | --- |
-| Migrate before traffic | Dedicated one-shot **migrate** service / pre-deploy job runs `prisma migrate deploy`; app service depends on successful migrate |
-| Secrets as files | Runtime reads `*_FILE` paths; start command materializes Railway variables into `/run/secrets/*` (mode `0600`) then `exec`s Node — app config still fail-closed on dual inline+file |
+| Migrate before traffic | Railway `deploy.preDeployCommand`: `npm run prisma:migrate:deploy` in the built image before traffic; image must retain Prisma CLI |
+| Secrets as files | Runtime reads `*_FILE` paths; `scripts/railway-entrypoint.sh` materializes Railway-injected source vars into `/tmp/mino-secrets/*` (mode `0600`), exports `*_FILE`, **unsets** inline sources, then `exec`s Node — fail-closed dual inline+file still enforced |
 | Separate signing authorities | Distinct mandate / delegation / audit private keys |
-| Redis auth + `noeviction` | Managed Redis with `requirepass` (or ACL) and `maxmemory-policy noeviction` verified at bring-up |
-| HTTPS issuer + webhook/retention URLs | `MINO_ISSUER` and bridge URLs are HTTPS |
-| Retention separate trust domain | Checkpoint receiver is **not** the Mino app service (external HTTPS bridge) |
-| Public bind intentional | Railway public domain only on the app service; Postgres/Redis not publicly exposed |
+| Redis auth + `noeviction` | Managed Redis startCommand patched with `--requirepass` + `--maxmemory-policy noeviction`; live `CONFIG GET maxmemory-policy` confirms |
+| HTTPS issuer + webhook/retention URLs | `MINO_ISSUER` and bridge URLs are HTTPS (app `assertHttpsUrl`) |
+| Retention separate trust domain | Checkpoint receiver is **not** the Mino app service (separate `mock-bridges` HTTPS service) |
+| Public bind intentional | Railway public domain only on the app (+ sandbox mocks); Postgres/Redis not publicly exposed |
 | Sandbox money only | No live provider credentials on this host until §8 gates |
 
 ## Known deltas vs Compose reference
@@ -23,9 +25,10 @@ Scope: sandbox pilot #1 only. Fly (or equivalent private-net shape) remains the 
 | --- | --- |
 | Private `backend` network + loopback publish by default | Platform private networking between services; public HTTPS edge for the app only |
 | Read-only rootfs, dropped caps, `no-new-privileges` | Railway container defaults — **not** claimed equivalent to Compose hardening |
-| Secrets bind-mounted from `deploy/secrets/` | Variables → files at process start (same `*_FILE` contract; plaintext exists briefly in platform secret store) |
-| Redis from `deploy/redis.conf` | Managed Redis; we verify auth + `noeviction` rather than shipping our conf file verbatim |
-| Migration image authority-split (no app secrets on migrate) | Migrate job gets **database URL only**; signing/merchant/metrics secrets stay on the app service |
+| Secrets bind-mounted from `deploy/secrets/` | Variables → files at process start via entrypoint (same `*_FILE` contract; plaintext exists briefly in platform secret store) |
+| Redis from `deploy/redis.conf` (AOF + noeviction + auth) | Auth + `noeviction` via startCommand; RDB `--save 60 1` only — **full AOF / appendfsync from compose is not applied** |
+| Migration image authority-split (no app secrets on migrate) | `preDeployCommand` runs in app image; prefer DB-only vars during migrate; signing/merchant/metrics secrets are for runtime |
+| Stock `Dockerfile` target `runtime` (Prisma CLI stripped) | Use `Dockerfile.railway` (keeps Prisma CLI + entrypoint) for this host |
 | Local twin may use host-network workarounds | Production-shaped claim waits on Fly/private-net before live |
 
 ## Explicit non-claims
@@ -36,16 +39,19 @@ Scope: sandbox pilot #1 only. Fly (or equivalent private-net shape) remains the 
 
 ## Bring-up checklist (Eng)
 
-1. Create Railway project `mino-pilot-sandbox`.
-2. Add Postgres + Redis; lock Redis policy.
-3. Add migrate service (DB URL only) and app service (full `*_FILE` set).
+1. Create Railway project `mino-sandbox-pilot`.
+2. Add Postgres + Redis; patch Redis startCommand for auth + `noeviction`; verify live.
+3. Deploy app with `Dockerfile.railway` + `scripts/railway-entrypoint.sh`; set `preDeployCommand` migrate.
 4. Generate sandbox-only Ed25519 + HMAC material; never commit secrets.
-5. Deploy migrate → app; confirm `/healthz` + `/readyz`.
-6. Re-run ops drills from `docs/PILOT_OPS_PACKAGE.md` against Railway.
-7. Seed pilot org (≥2 admins) so retention + acceptance can complete.
+5. Separate `mock-bridges` HTTPS service for approval webhook + audit retention.
+6. Confirm `/healthz` + `/readyz`.
+7. Re-run ops drills from `docs/PILOT_OPS_PACKAGE.md` against Railway.
+8. Seed pilot org (≥2 admins) so retention + acceptance can complete.
 
 ## Related
 
 - `docs/PILOT_OPS_PACKAGE.md`
 - `docs/PILOT_ACCEPTANCE_CHECKLIST.md`
 - `deploy/README.md`
+- `Dockerfile.railway`
+- `scripts/railway-entrypoint.sh`
